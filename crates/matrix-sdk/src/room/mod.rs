@@ -2513,6 +2513,24 @@ impl Room {
         SendMessageLikeEvent::new(self, content)
     }
 
+    /// Send a message-like event marked as sticky (MSC4354) for `duration_ms`
+    /// milliseconds (clamped to one hour).
+    ///
+    /// This is a convenience wrapper around [`Room::send`] and
+    /// [`SendMessageLikeEvent::with_sticky_duration_ms`]. To remove a sticky
+    /// map entry, send a replacement event of the same type carrying only its
+    /// `sticky_key` (for MatrixRTC, a disconnect event).
+    ///
+    /// The homeserver must advertise support for sticky events.
+    #[cfg(feature = "unstable-msc4354")]
+    pub fn send_sticky(
+        &self,
+        content: impl MessageLikeEventContent,
+        duration_ms: u32,
+    ) -> SendMessageLikeEvent<'_> {
+        self.send(content).with_sticky_duration_ms(duration_ms)
+    }
+
     /// Run /keys/query requests for all the non-tracked users, and for users
     /// with an out-of-date device list.
     #[cfg(feature = "e2e-encryption")]

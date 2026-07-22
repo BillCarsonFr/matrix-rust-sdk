@@ -441,6 +441,78 @@ impl Room {
         Ok(())
     }
 
+    /// The currently-live sticky events (MSC4354) in this room.
+    #[cfg(feature = "unstable-msc4354")]
+    pub fn sticky_events(&self) -> Vec<StickyEvent> {
+        self.inner.live_sticky_events().into_iter().map(Into::into).collect()
+    }
+
+    /// Subscribe to changes of the live sticky-events map.
+    ///
+    /// The listener is called with the full current snapshot immediately and on
+    /// every subsequent change. Use the returned [`TaskHandle`] to cancel.
+    #[cfg(feature = "unstable-msc4354")]
+    pub fn subscribe_to_sticky_events(
+        self: Arc<Self>,
+        listener: Box<dyn StickyEventsListener>,
+    ) -> Arc<TaskHandle> {
+        use tokio::sync::broadcast::error::RecvError;
+
+        let mut subscriber = self.inner.subscribe_to_sticky_events();
+
+        // Emit the current snapshot right away.
+        listener.on_update(self.inner.live_sticky_events().into_iter().map(Into::into).collect());
+
+        Arc::new(TaskHandle::new(get_runtime_handle().spawn(async move {
+            loop {
+                match subscriber.recv().await {
+                    Ok(_) | Err(RecvError::Lagged(_)) => {
+                        listener.on_update(
+                            self.inner.live_sticky_events().into_iter().map(Into::into).collect(),
+                        );
+                    }
+                    Err(RecvError::Closed) => break,
+                }
+            }
+        })))
+    }
+
+    /// Send a sticky event (MSC4354) with a raw JSON `content` string, marked
+    /// sticky for `duration_ms` milliseconds (clamped to one hour).
+    #[cfg(feature = "unstable-msc4354")]
+    pub async fn send_sticky_raw(
+        &self,
+        event_type: String,
+        content: String,
+        duration_ms: u32,
+    ) -> Result<(), ClientError> {
+        let content_json: serde_json::Value =
+            serde_json::from_str(&content).map_err(|e| ClientError::Generic {
+                msg: format!("Failed to parse JSON: {e}"),
+                details: Some(format!("{e:?}")),
+            })?;
+
+        self.inner.send_raw(&event_type, content_json).with_sticky_duration_ms(duration_ms).await?;
+
+        Ok(())
+    }
+
+    /// Remove a sticky map entry by sending a replacement event of `event_type`
+    /// carrying only its `sticky_key`.
+    #[cfg(feature = "unstable-msc4354")]
+    pub async fn remove_sticky(
+        &self,
+        event_type: String,
+        sticky_key: String,
+        duration_ms: u32,
+    ) -> Result<(), ClientError> {
+        let content_json = serde_json::json!({ "sticky_key": sticky_key });
+
+        self.inner.send_raw(&event_type, content_json).with_sticky_duration_ms(duration_ms).await?;
+
+        Ok(())
+    }
+
     /// Send a raw state event to the room.
     ///
     /// # Arguments
@@ -1415,6 +1487,44 @@ pub fn matrix_to_room_alias_permalink(
 #[matrix_sdk_ffi_macros::export(callback_interface)]
 pub trait RoomInfoListener: SyncOutsideWasm + SendOutsideWasm {
     fn call(&self, room_info: RoomInfo);
+}
+
+/// A currently-live sticky event (MSC4354), as exposed over FFI.
+#[cfg(feature = "unstable-msc4354")]
+#[derive(uniffi::Record)]
+pub struct StickyEvent {
+    /// The event sender.
+    pub sender: String,
+    /// The event type, e.g. `m.rtc.member`.
+    pub event_type: String,
+    /// The `content.sticky_key`, if any.
+    pub sticky_key: Option<String>,
+    /// The event id.
+    pub event_id: String,
+    /// Absolute expiry time in milliseconds since the Unix epoch.
+    pub expires_at_ms: u64,
+    /// The full sticky event, as a JSON string.
+    pub event_json: String,
+}
+
+#[cfg(feature = "unstable-msc4354")]
+impl From<matrix_sdk_base::sticky::StickyLiveEvent> for StickyEvent {
+    fn from(event: matrix_sdk_base::sticky::StickyLiveEvent) -> Self {
+        Self {
+            sender: event.key.sender.to_string(),
+            event_type: event.key.event_type,
+            sticky_key: event.key.sticky_key,
+            event_id: event.event_id.to_string(),
+            expires_at_ms: event.expires_at_ms,
+            event_json: event.event.json().get().to_owned(),
+        }
+    }
+}
+
+#[cfg(feature = "unstable-msc4354")]
+#[matrix_sdk_ffi_macros::export(callback_interface)]
+pub trait StickyEventsListener: SyncOutsideWasm + SendOutsideWasm {
+    fn on_update(&self, events: Vec<StickyEvent>);
 }
 
 #[matrix_sdk_ffi_macros::export(callback_interface)]

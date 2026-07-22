@@ -104,6 +104,13 @@ pub struct Room {
 
     /// A sender that will notify receivers when room member updates happen.
     pub room_member_updates_sender: broadcast::Sender<RoomMembersUpdate>,
+
+    /// Map of currently-live sticky events (MSC4354), fed from sync and expired
+    /// on a TTL. Persisted to the state store and reloaded on startup, since the
+    /// sliding-sync sticky extension only backfills incrementally and does not
+    /// re-deliver already-seen live stickies on a subsequent sync.
+    #[cfg(feature = "unstable-msc4354")]
+    pub(crate) sticky_events: crate::sticky::StickyEvents,
 }
 
 impl Room {
@@ -125,6 +132,9 @@ impl Room {
         room_info_notable_update_sender: broadcast::Sender<RoomInfoNotableUpdate>,
     ) -> Self {
         let (room_member_updates_sender, _) = broadcast::channel(10);
+        #[cfg(feature = "unstable-msc4354")]
+        let sticky_events =
+            crate::sticky::StickyEvents::new(store.clone(), room_info.room_id.clone());
         Self {
             own_user_id: own_user_id.into(),
             room_id: room_info.room_id.clone(),
@@ -133,7 +143,107 @@ impl Room {
             room_info_notable_update_sender,
             seen_knock_request_ids_map: SharedObservable::new_async(None),
             room_member_updates_sender,
+            #[cfg(feature = "unstable-msc4354")]
+            sticky_events,
         }
+    }
+
+    /// Access the map of currently-live sticky events (MSC4354) for this room.
+    #[cfg(feature = "unstable-msc4354")]
+    pub fn sticky_events(&self) -> &crate::sticky::StickyEvents {
+        &self.sticky_events
+    }
+
+    /// Load this room's sticky-event map from the state store. Called when the
+    /// room is loaded, so already-live stickies survive a restart even though
+    /// the sliding-sync extension only backfills incrementally.
+    #[cfg(feature = "unstable-msc4354")]
+    pub(crate) async fn load_sticky_events(&self) -> StoreResult<()> {
+        use crate::store::StateStoreDataKey;
+
+        if let Some(events) = self
+            .store
+            .get_kv_data(StateStoreDataKey::StickyEvents(&self.room_id))
+            .await?
+            .and_then(|value| value.into_sticky_events())
+        {
+            self.sticky_events.load(events);
+        }
+
+        // Also restore the parked (encrypted) buffer, so keys arriving after a
+        // restart can still decrypt events that were UTD at shutdown.
+        if let Some(pending) = self
+            .store
+            .get_kv_data(StateStoreDataKey::StickyPendingEvents(&self.room_id))
+            .await?
+            .and_then(|value| value.into_sticky_pending_events())
+        {
+            self.sticky_events.load_pending(pending);
+        }
+
+        Ok(())
+    }
+
+    /// A snapshot of all currently-live sticky events in this room.
+    #[cfg(feature = "unstable-msc4354")]
+    pub fn live_sticky_events(&self) -> Vec<crate::sticky::StickyLiveEvent> {
+        self.sticky_events.live()
+    }
+
+    /// Subscribe to changes of the live sticky-events map for this room.
+    #[cfg(feature = "unstable-msc4354")]
+    pub fn subscribe_to_sticky_events(
+        &self,
+    ) -> broadcast::Receiver<crate::sticky::StickyEventsUpdate> {
+        self.sticky_events.subscribe()
+    }
+
+    /// The live MatrixRTC (`m.rtc.member`) memberships in this room, backed by
+    /// MSC4354 sticky events (as opposed to the MSC3401 `m.call.member` state
+    /// events surfaced by [`Room::active_room_call_participants`]).
+    ///
+    /// Only connected memberships are returned; disconnect events are skipped.
+    #[cfg(feature = "unstable-msc4354")]
+    pub fn active_rtc_member_stickies(
+        &self,
+    ) -> Vec<(OwnedUserId, ruma::events::rtc::member::RtcMemberEventContent)> {
+        self.sticky_events
+            .live()
+            .into_iter()
+            .filter(|e| {
+                matches!(
+                    e.key.event_type.as_str(),
+                    "m.rtc.member" | "org.matrix.msc4143.rtc.member"
+                )
+            })
+            .filter_map(|e| {
+                let content = e
+                    .event
+                    .get_field::<ruma::events::rtc::member::RtcMemberEventContent>("content")
+                    .ok()
+                    .flatten()?;
+                // Skip disconnected memberships.
+                (content.disconnect_reason.is_none() && content.member.is_some())
+                    .then(|| (e.key.sender.clone(), content))
+            })
+            .collect()
+    }
+
+    /// Whether there is any live `m.rtc.member` sticky membership in this room.
+    #[cfg(feature = "unstable-msc4354")]
+    pub fn has_active_rtc_member_sticky(&self) -> bool {
+        // Stop at the first connected membership instead of collecting and
+        // deserializing them all.
+        self.sticky_events.live().into_iter().any(|e| {
+            matches!(e.key.event_type.as_str(), "m.rtc.member" | "org.matrix.msc4143.rtc.member")
+                && e.event
+                    .get_field::<ruma::events::rtc::member::RtcMemberEventContent>("content")
+                    .ok()
+                    .flatten()
+                    .is_some_and(|content| {
+                        content.disconnect_reason.is_none() && content.member.is_some()
+                    })
+        })
     }
 
     /// Get the unique room id of the room.

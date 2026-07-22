@@ -24,6 +24,8 @@ use eyeball::SharedObservable;
 use matrix_sdk_base::deserialized_responses::EncryptionInfo;
 use matrix_sdk_common::boxed_into_future;
 use mime::Mime;
+#[cfg(feature = "unstable-msc4354")]
+use ruma::events::sticky::StickyDurationMs;
 #[cfg(doc)]
 use ruma::events::{MessageLikeUnsigned, SyncMessageLikeEvent};
 use ruma::{
@@ -65,13 +67,34 @@ pub struct SendMessageLikeEvent<'a> {
     content: serde_json::Result<serde_json::Value>,
     transaction_id: Option<OwnedTransactionId>,
     request_config: Option<RequestConfig>,
+    #[cfg(feature = "unstable-msc4354")]
+    sticky_duration_ms: Option<StickyDurationMs>,
 }
 
 impl<'a> SendMessageLikeEvent<'a> {
     pub(crate) fn new(room: &'a Room, content: impl MessageLikeEventContent) -> Self {
         let event_type = content.event_type().to_string();
         let content = serde_json::to_value(&content);
-        Self { room, event_type, content, transaction_id: None, request_config: None }
+        Self {
+            room,
+            event_type,
+            content,
+            transaction_id: None,
+            request_config: None,
+            #[cfg(feature = "unstable-msc4354")]
+            sticky_duration_ms: None,
+        }
+    }
+
+    /// Mark this event as sticky (MSC4354) for the given duration in
+    /// milliseconds, clamped to one hour.
+    ///
+    /// The homeserver must advertise support for sticky events. See
+    /// [MSC4354](https://github.com/matrix-org/matrix-spec-proposals/pull/4354).
+    #[cfg(feature = "unstable-msc4354")]
+    pub fn with_sticky_duration_ms(mut self, duration_ms: u32) -> Self {
+        self.sticky_duration_ms = Some(StickyDurationMs::new_clamped(duration_ms));
+        self
     }
 
     /// Set a transaction ID for this event.
@@ -109,10 +132,26 @@ impl<'a> IntoFuture for SendMessageLikeEvent<'a> {
     boxed_into_future!(extra_bounds: 'a);
 
     fn into_future(self) -> Self::IntoFuture {
-        let Self { room, event_type, content, transaction_id, request_config } = self;
+        let Self {
+            room,
+            event_type,
+            content,
+            transaction_id,
+            request_config,
+            #[cfg(feature = "unstable-msc4354")]
+            sticky_duration_ms,
+        } = self;
         Box::pin(async move {
             let content = content?;
-            assign!(room.send_raw(&event_type, content), { transaction_id, request_config }).await
+            #[cfg_attr(not(feature = "unstable-msc4354"), allow(unused_mut))]
+            let mut raw = assign!(room.send_raw(&event_type, content), {
+                transaction_id, request_config
+            });
+            #[cfg(feature = "unstable-msc4354")]
+            {
+                raw.sticky_duration_ms = sticky_duration_ms;
+            }
+            raw.await
         })
     }
 }
@@ -126,6 +165,8 @@ pub struct SendRawMessageLikeEvent<'a> {
     tracing_span: Span,
     transaction_id: Option<OwnedTransactionId>,
     request_config: Option<RequestConfig>,
+    #[cfg(feature = "unstable-msc4354")]
+    sticky_duration_ms: Option<StickyDurationMs>,
 }
 
 impl<'a> SendRawMessageLikeEvent<'a> {
@@ -142,7 +183,20 @@ impl<'a> SendRawMessageLikeEvent<'a> {
             tracing_span: Span::current(),
             transaction_id: None,
             request_config: None,
+            #[cfg(feature = "unstable-msc4354")]
+            sticky_duration_ms: None,
         }
+    }
+
+    /// Mark this event as sticky (MSC4354) for the given duration in
+    /// milliseconds, clamped to one hour.
+    ///
+    /// The homeserver must advertise support for sticky events. See
+    /// [MSC4354](https://github.com/matrix-org/matrix-spec-proposals/pull/4354).
+    #[cfg(feature = "unstable-msc4354")]
+    pub fn with_sticky_duration_ms(mut self, duration_ms: u32) -> Self {
+        self.sticky_duration_ms = Some(StickyDurationMs::new_clamped(duration_ms));
+        self
     }
 
     /// Set a transaction ID for this event.
@@ -185,6 +239,8 @@ impl<'a> IntoFuture for SendRawMessageLikeEvent<'a> {
             tracing_span,
             transaction_id,
             request_config,
+            #[cfg(feature = "unstable-msc4354")]
+            sticky_duration_ms,
         } = self;
 
         let fut = async move {
@@ -230,12 +286,17 @@ impl<'a> IntoFuture for SendRawMessageLikeEvent<'a> {
                 trace!("Sending plaintext event because the room is NOT encrypted.");
             }
 
-            let request = send_message_event::v3::Request::new_raw(
+            #[cfg_attr(not(feature = "unstable-msc4354"), allow(unused_mut))]
+            let mut request = send_message_event::v3::Request::new_raw(
                 room.room_id().to_owned(),
                 txn_id,
                 event_type.into(),
                 content,
             );
+            #[cfg(feature = "unstable-msc4354")]
+            {
+                request.sticky_duration_ms = sticky_duration_ms;
+            }
 
             let response = room.client.send(request).with_request_config(request_config).await?;
 

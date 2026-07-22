@@ -98,9 +98,10 @@ pub use self::{
     },
     traits::{
         ComposerDraft, ComposerDraftType, DraftAttachment, DraftAttachmentContent, DraftThumbnail,
-        DynStateStore, IncorrectMutexGuardError, IntoStateStore, SaveLockedStateStore, StateStore,
-        StateStoreDataKey, StateStoreDataValue, StateStoreExt, SupportedVersionsResponse,
-        ThreadSubscriptionCatchupToken, WellKnownResponse,
+        DynStateStore, IncorrectMutexGuardError, IntoStateStore, PersistedPendingStickyEvent,
+        PersistedStickyEvent, SaveLockedStateStore, StateStore, StateStoreDataKey,
+        StateStoreDataValue, StateStoreExt, SupportedVersionsResponse, ThreadSubscriptionCatchupToken,
+        WellKnownResponse,
     },
 };
 
@@ -250,8 +251,10 @@ impl BaseStateStore {
 
         let room_infos = self.load_and_migrate_room_infos(room_load_settings).await?;
 
-        let mut rooms = self.rooms.write().unwrap();
-
+        // Restore (and, for MSC4354, load the sticky-event map of) each room
+        // before taking the `rooms` write lock, since loading is async and the
+        // lock is a synchronous guard that must not be held across an `.await`.
+        let mut new_rooms = Vec::with_capacity(room_infos.len());
         for room_info in room_infos {
             let new_room = Room::restore(
                 user_id,
@@ -259,8 +262,25 @@ impl BaseStateStore {
                 room_info,
                 self.room_info_notable_update_sender.clone(),
             );
-            let new_room_id = new_room.room_id().to_owned();
 
+            // A failure to load persisted sticky events (corruption, schema
+            // evolution, backend read error) must not prevent the room from
+            // being restored — degrade to an empty sticky map instead.
+            #[cfg(feature = "unstable-msc4354")]
+            if let Err(error) = new_room.load_sticky_events().await {
+                tracing::warn!(
+                    room_id = ?new_room.room_id(),
+                    ?error,
+                    "failed to load persisted sticky events; starting with an empty map",
+                );
+            }
+
+            new_rooms.push(new_room);
+        }
+
+        let mut rooms = self.rooms.write().unwrap();
+        for new_room in new_rooms {
+            let new_room_id = new_room.room_id().to_owned();
             rooms.insert(new_room_id, new_room);
         }
 

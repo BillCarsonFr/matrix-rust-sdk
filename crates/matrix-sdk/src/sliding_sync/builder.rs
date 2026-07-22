@@ -115,7 +115,22 @@ impl SlidingSyncBuilder {
             if cfg.typing.enabled.is_none() {
                 cfg.typing.enabled = Some(true);
             }
+
+            #[cfg(feature = "unstable-msc4354")]
+            if cfg.sticky_events.enabled.is_none() {
+                cfg.sticky_events.enabled = Some(true);
+            }
         }
+        self
+    }
+
+    /// Set the sticky events (MSC4354) extension configuration.
+    #[cfg(feature = "unstable-msc4354")]
+    pub fn with_sticky_events_extension(
+        mut self,
+        sticky_events: http::request::StickyEvents,
+    ) -> Self {
+        self.extensions.get_or_insert_with(Default::default).sticky_events = sticky_events;
         self
     }
 

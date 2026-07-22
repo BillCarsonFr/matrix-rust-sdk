@@ -38,7 +38,8 @@ use ruma::{
         },
     },
     events::{
-        AnyGlobalAccountDataEvent, AnyRoomAccountDataEvent, EmptyStateKey, GlobalAccountDataEvent,
+        AnyGlobalAccountDataEvent, AnyRoomAccountDataEvent, AnySyncTimelineEvent, EmptyStateKey,
+        GlobalAccountDataEvent,
         GlobalAccountDataEventContent, GlobalAccountDataEventType, RedactContent,
         RedactedStateEventContent, RoomAccountDataEvent, RoomAccountDataEventContent,
         RoomAccountDataEventType, StateEventType, StaticEventContent, StaticStateEventContent,
@@ -2227,6 +2228,59 @@ pub enum StateStoreDataValue {
 
     /// The capabilities the homeserver supports or disables.
     HomeserverCapabilities(TtlValue<Capabilities>),
+
+    /// The currently-live [MSC4354] sticky events for a room.
+    ///
+    /// [MSC4354]: https://github.com/matrix-org/matrix-spec-proposals/pull/4354
+    StickyEvents(Vec<PersistedStickyEvent>),
+
+    /// The encrypted [MSC4354] sticky events for a room parked awaiting
+    /// decryption.
+    ///
+    /// [MSC4354]: https://github.com/matrix-org/matrix-spec-proposals/pull/4354
+    StickyPendingEvents(Vec<PersistedPendingStickyEvent>),
+}
+
+/// A single currently-live sticky event ([MSC4354]), as persisted in the store.
+///
+/// This is the on-disk representation of one entry of the in-memory sticky-event
+/// map. It is self-contained (it carries the full event, not just an id) because
+/// section-delivered sticky events never reach any timeline store, so there is
+/// nothing to resolve an id against. Stored per room so the map can be rebuilt
+/// on the next load without waiting for a sync to re-deliver it.
+///
+/// [MSC4354]: https://github.com/matrix-org/matrix-spec-proposals/pull/4354
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedStickyEvent {
+    /// The event sender (part of the map key).
+    pub sender: OwnedUserId,
+    /// The event type, e.g. `m.rtc.member` (part of the map key).
+    pub event_type: String,
+    /// The `content.sticky_key`, if any (part of the map key).
+    pub sticky_key: Option<String>,
+    /// The event id (tie-breaker of last resort).
+    pub event_id: OwnedEventId,
+    /// Absolute expiry time in milliseconds since the Unix epoch.
+    pub end_time: u64,
+    /// The full, decrypted sticky event.
+    pub event: Raw<AnySyncTimelineEvent>,
+}
+
+/// A single encrypted sticky event ([MSC4354]) parked awaiting decryption, as
+/// persisted in the store.
+///
+/// Persisted separately from [`PersistedStickyEvent`] (it is still encrypted) so
+/// that, after a restart, room keys arriving later can still decrypt it — the
+/// sliding-sync extension only backfills incrementally and won't re-deliver it.
+///
+/// [MSC4354]: https://github.com/matrix-org/matrix-spec-proposals/pull/4354
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedPendingStickyEvent {
+    /// Local time (ms since the Unix epoch) the event was first received, so a
+    /// retry doesn't reset its TTL and stale entries can be dropped on load.
+    pub received_ts: u64,
+    /// The full, still-encrypted sticky event.
+    pub event: Raw<AnySyncTimelineEvent>,
 }
 
 /// Tokens to use when catching up on thread subscriptions.
@@ -2434,6 +2488,17 @@ impl StateStoreDataValue {
     pub fn into_homeserver_capabilities(self) -> Option<TtlValue<Capabilities>> {
         as_variant!(self, Self::HomeserverCapabilities)
     }
+
+    /// Get this value if it is a room's persisted sticky events.
+    pub fn into_sticky_events(self) -> Option<Vec<PersistedStickyEvent>> {
+        as_variant!(self, Self::StickyEvents)
+    }
+
+    /// Get this value if it is a room's persisted parked (encrypted) sticky
+    /// events.
+    pub fn into_sticky_pending_events(self) -> Option<Vec<PersistedPendingStickyEvent>> {
+        as_variant!(self, Self::StickyPendingEvents)
+    }
 }
 
 /// A key for key-value data.
@@ -2479,6 +2544,17 @@ pub enum StateStoreDataKey<'a> {
 
     /// A list of capabilities that the homeserver supports.
     HomeserverCapabilities,
+
+    /// The currently-live [MSC4354] sticky events for the given room.
+    ///
+    /// [MSC4354]: https://github.com/matrix-org/matrix-spec-proposals/pull/4354
+    StickyEvents(&'a RoomId),
+
+    /// The encrypted [MSC4354] sticky events for the given room parked awaiting
+    /// decryption.
+    ///
+    /// [MSC4354]: https://github.com/matrix-org/matrix-spec-proposals/pull/4354
+    StickyPendingEvents(&'a RoomId),
 }
 
 impl StateStoreDataKey<'_> {
@@ -2527,6 +2603,13 @@ impl StateStoreDataKey<'_> {
 
     /// Key prefix to use for the homeserver's [`Capabilities`].
     pub const HOMESERVER_CAPABILITIES: &'static str = "homeserver_capabilities";
+
+    /// Key prefix to use for the [`StickyEvents`][Self::StickyEvents] variant.
+    pub const STICKY_EVENTS: &'static str = "sticky_events";
+
+    /// Key prefix to use for the
+    /// [`StickyPendingEvents`][Self::StickyPendingEvents] variant.
+    pub const STICKY_PENDING_EVENTS: &'static str = "sticky_pending_events";
 }
 
 /// Compare two thread subscription changes bump stamps, given a fixed room and

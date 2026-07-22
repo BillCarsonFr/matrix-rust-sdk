@@ -550,6 +550,12 @@ impl SqliteStateStore {
             StateStoreDataKey::HomeserverCapabilities => {
                 Cow::Borrowed(StateStoreDataKey::HOMESERVER_CAPABILITIES)
             }
+            StateStoreDataKey::StickyEvents(room_id) => {
+                Cow::Owned(format!("{}:{room_id}", StateStoreDataKey::STICKY_EVENTS))
+            }
+            StateStoreDataKey::StickyPendingEvents(room_id) => {
+                Cow::Owned(format!("{}:{room_id}", StateStoreDataKey::STICKY_PENDING_EVENTS))
+            }
         };
 
         self.encode_key(keys::KV_BLOB, &*key_s)
@@ -1231,6 +1237,14 @@ impl StateStore for SqliteStateStore {
                     StateStoreDataKey::HomeserverCapabilities => {
                         StateStoreDataValue::HomeserverCapabilities(self.deserialize_value(&data)?)
                     }
+                    StateStoreDataKey::StickyEvents(_) => {
+                        // Sticky events contain `Raw` JSON, which the non-self-describing
+                        // MessagePack (de)serializer can't handle, so use JSON here.
+                        StateStoreDataValue::StickyEvents(self.deserialize_json(&data)?)
+                    }
+                    StateStoreDataKey::StickyPendingEvents(_) => {
+                        StateStoreDataValue::StickyPendingEvents(self.deserialize_json(&data)?)
+                    }
                 })
             })
             .transpose()
@@ -1285,6 +1299,14 @@ impl StateStore for SqliteStateStore {
                 &value
                     .into_homeserver_capabilities()
                     .expect("Session data is not the homeserver capabilities"),
+            )?,
+            StateStoreDataKey::StickyEvents(_) => self.serialize_json(
+                &value.into_sticky_events().expect("Session data is not sticky events"),
+            )?,
+            StateStoreDataKey::StickyPendingEvents(_) => self.serialize_json(
+                &value
+                    .into_sticky_pending_events()
+                    .expect("Session data is not pending sticky events"),
             )?,
         };
 

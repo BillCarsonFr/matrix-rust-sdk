@@ -32,7 +32,8 @@ use matrix_sdk_base::{
     deserialized_responses::{DisplayName, RawAnySyncOrStrippedState},
     store::{
         ChildTransactionId, ComposerDraft, DependentQueuedRequest, DependentQueuedRequestKind,
-        QueuedRequest, QueuedRequestKind, RoomLoadSettings, SentRequestKey,
+        PersistedPendingStickyEvent, PersistedStickyEvent, QueuedRequest, QueuedRequestKind,
+        RoomLoadSettings, SentRequestKey,
         SerializableEventContent, StateChanges, StateStore, StoreError, StoredThreadSubscription,
         SupportedVersionsResponse, ThreadSubscriptionStatus, WellKnownResponse,
         compare_thread_subscription_bump_stamps,
@@ -516,6 +517,12 @@ impl IndexeddbStateStore {
             StateStoreDataKey::HomeserverCapabilities => {
                 self.encode_key(keys::KV, StateStoreDataKey::HOMESERVER_CAPABILITIES)
             }
+            StateStoreDataKey::StickyEvents(room_id) => {
+                self.encode_key(keys::KV, (StateStoreDataKey::STICKY_EVENTS, room_id))
+            }
+            StateStoreDataKey::StickyPendingEvents(room_id) => {
+                self.encode_key(keys::KV, (StateStoreDataKey::STICKY_PENDING_EVENTS, room_id))
+            }
         }
     }
 }
@@ -682,6 +689,14 @@ impl_state_store!({
                 .map(|f| self.deserialize_value::<TtlValue<Capabilities>>(&f))
                 .transpose()?
                 .map(StateStoreDataValue::HomeserverCapabilities),
+            StateStoreDataKey::StickyEvents(_) => value
+                .map(|f| self.deserialize_value::<Vec<PersistedStickyEvent>>(&f))
+                .transpose()?
+                .map(StateStoreDataValue::StickyEvents),
+            StateStoreDataKey::StickyPendingEvents(_) => value
+                .map(|f| self.deserialize_value::<Vec<PersistedPendingStickyEvent>>(&f))
+                .transpose()?
+                .map(StateStoreDataValue::StickyPendingEvents),
         };
 
         Ok(value)
@@ -737,6 +752,14 @@ impl_state_store!({
                 &value
                     .into_homeserver_capabilities()
                     .expect("Session data is not a homeserver capabilities"),
+            ),
+            StateStoreDataKey::StickyEvents(_) => self.serialize_value(
+                &value.into_sticky_events().expect("Session data is not sticky events"),
+            ),
+            StateStoreDataKey::StickyPendingEvents(_) => self.serialize_value(
+                &value
+                    .into_sticky_pending_events()
+                    .expect("Session data is not pending sticky events"),
             ),
         };
 

@@ -68,8 +68,8 @@ rand = "0.10.2"
 rcgen = { version = "0.14.8", default-features = false }
 regex = { version = "1.13.1", default-features = false, features = ["std", "unicode-perl"] }
 reqwest = { version = "0.13.1", default-features = false }
-rmp-serde = { version = "1.3.1", default-features = false }
-ruma = { git = "https://github.com/ruma/ruma", rev = "db24422e03aea7c7974230098fe9aeb5481cddc6", features = [
+rmp-serde = { version = "1.3.0", default-features = false }
+ruma = { git = "https://github.com/BillCarsonFr/ruma", rev = "161531dff66d247ad4ded75d579e5408ce44f294", features = [
     "client-api-c",
     "compat-unset-avatar",
     "compat-upload-signatures",
@@ -93,6 +93,9 @@ ruma = { git = "https://github.com/ruma/ruma", rev = "db24422e03aea7c7974230098f
     "unstable-msc4306",
     "unstable-msc4308",
     "unstable-msc4310",
+    "unstable-msc4354",
+    # MSC4480: sticky events sliding-sync extension (pulls in unstable-msc4354).
+    "unstable-msc4480",
 ] }
 sentry = { version = "0.49.0", default-features = false }
 sentry-tracing = { version = "0.49.0", default-features = false }

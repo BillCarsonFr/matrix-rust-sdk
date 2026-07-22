@@ -19,7 +19,7 @@ use ruma::{
     event_id,
     events::{
         AnyGlobalAccountDataEvent, AnyMessageLikeEventContent, AnyRoomAccountDataEvent,
-        AnyStrippedStateEvent, AnySyncStateEvent, GlobalAccountDataEventType,
+        AnyStrippedStateEvent, AnySyncStateEvent, AnySyncTimelineEvent, GlobalAccountDataEventType,
         RoomAccountDataEventType, StateEventType, SyncStateEvent,
         presence::PresenceEvent,
         receipt::{ReceiptThread, ReceiptType},
@@ -54,8 +54,8 @@ use crate::{
     RoomInfo, RoomMemberships, RoomState, StateChanges, StateStoreDataKey, StateStoreDataValue,
     deserialized_responses::MemberEvent,
     store::{
-        ChildTransactionId, QueueWedgeError, SerializableEventContent, StateStoreExt,
-        StoredThreadSubscription, ThreadSubscriptionStatus,
+        ChildTransactionId, PersistedPendingStickyEvent, PersistedStickyEvent, QueueWedgeError,
+        SerializableEventContent, StateStoreExt, StoredThreadSubscription, ThreadSubscriptionStatus,
     },
     utils::RawStateEventWithKeys,
 };
@@ -124,6 +124,8 @@ pub trait StateStoreIntegrationTests {
     async fn test_global_profiles_saving(&self) -> TestResult;
     /// Test loading global profiles for several users at once.
     async fn test_global_profiles_bulk_loading(&self) -> TestResult;
+    /// Test persisting, reading back and removing a room's sticky events.
+    async fn test_sticky_events(&self) -> TestResult;
 }
 
 impl StateStoreIntegrationTests for DynStateStore {
@@ -660,6 +662,85 @@ impl StateStoreIntegrationTests for DynStateStore {
             .expect("not UtdHookManagerData");
 
         assert_eq!(read_data, data);
+
+        Ok(())
+    }
+
+    async fn test_sticky_events(&self) -> TestResult {
+        let room_id = room_id!("!sticky:localhost");
+
+        // Nothing persisted initially.
+        assert!(
+            self.get_kv_data(StateStoreDataKey::StickyEvents(room_id)).await?.is_none(),
+            "Store was not empty at start"
+        );
+
+        let event: Raw<AnySyncTimelineEvent> = serde_json::from_value(json!({
+            "type": "m.rtc.member",
+            "sender": "@alice:localhost",
+            "event_id": "$sticky1:localhost",
+            "origin_server_ts": 1,
+            "content": { "sticky_key": "slot" },
+        }))?;
+        let entries = vec![PersistedStickyEvent {
+            sender: user_id!("@alice:localhost").to_owned(),
+            event_type: "m.rtc.member".to_owned(),
+            sticky_key: Some("slot".to_owned()),
+            event_id: owned_event_id!("$sticky1:localhost"),
+            end_time: 1_000,
+            event,
+        }];
+
+        self.set_kv_data(
+            StateStoreDataKey::StickyEvents(room_id),
+            StateStoreDataValue::StickyEvents(entries.clone()),
+        )
+        .await?;
+
+        // ... and it comes back intact.
+        let read = self
+            .get_kv_data(StateStoreDataKey::StickyEvents(room_id))
+            .await?
+            .expect("sticky events should be present")
+            .into_sticky_events()
+            .expect("value should be sticky events");
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].sender, user_id!("@alice:localhost"));
+        assert_eq!(read[0].event_type, "m.rtc.member");
+        assert_eq!(read[0].sticky_key.as_deref(), Some("slot"));
+        assert_eq!(read[0].event_id, owned_event_id!("$sticky1:localhost"));
+        assert_eq!(read[0].end_time, 1_000);
+
+        // The parked (encrypted) buffer round-trips through its own key.
+        assert!(self.get_kv_data(StateStoreDataKey::StickyPendingEvents(room_id)).await?.is_none());
+        let pending_event: Raw<AnySyncTimelineEvent> = serde_json::from_value(json!({
+            "type": "m.room.encrypted",
+            "sender": "@alice:localhost",
+            "event_id": "$sticky2:localhost",
+            "origin_server_ts": 2,
+            "content": { "algorithm": "m.megolm.v1.aes-sha2", "ciphertext": "AAAA" },
+        }))?;
+        let pending =
+            vec![PersistedPendingStickyEvent { received_ts: 42, event: pending_event }];
+        self.set_kv_data(
+            StateStoreDataKey::StickyPendingEvents(room_id),
+            StateStoreDataValue::StickyPendingEvents(pending),
+        )
+        .await?;
+        let read_pending = self
+            .get_kv_data(StateStoreDataKey::StickyPendingEvents(room_id))
+            .await?
+            .expect("pending sticky events should be present")
+            .into_sticky_pending_events()
+            .expect("value should be pending sticky events");
+        assert_eq!(read_pending.len(), 1);
+        assert_eq!(read_pending[0].received_ts, 42);
+
+        // Removal clears both keys.
+        self.remove_kv_data(StateStoreDataKey::StickyEvents(room_id)).await?;
+        self.remove_kv_data(StateStoreDataKey::StickyPendingEvents(room_id)).await?;
+        assert!(self.get_kv_data(StateStoreDataKey::StickyEvents(room_id)).await?.is_none());
+        assert!(self.get_kv_data(StateStoreDataKey::StickyPendingEvents(room_id)).await?.is_none());
 
         Ok(())
     }
@@ -2325,6 +2406,12 @@ macro_rules! statestore_integration_tests {
             async fn test_one_time_key_already_uploaded_data_saving() -> TestResult {
                 let store = get_store().await?.into_state_store();
                 store.test_one_time_key_already_uploaded_data_saving().await
+            }
+
+            #[async_test]
+            async fn test_sticky_events() -> TestResult {
+                let store = get_store().await?.into_state_store();
+                store.test_sticky_events().await
             }
 
             #[async_test]

@@ -22,6 +22,8 @@ unstable-msc3956 = ["ruma/unstable-msc3956"]
 
 # Add support for inline media galleries via msgtypes
 unstable-msc4274 = ["matrix-sdk/unstable-msc4274"]
+# MSC4354 sticky events + MSC4480 sticky-events sliding-sync extension.
+unstable-msc4354 = ["matrix-sdk/unstable-msc4354"]
 
 # Add support for user status profile fields (m.status, m.call).
 unstable-msc4426 = ["matrix-sdk/unstable-msc4426"]

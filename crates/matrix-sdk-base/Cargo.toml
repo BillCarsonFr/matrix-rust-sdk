@@ -68,6 +68,10 @@ testing = [
 # Add support for inline media galleries via msgtypes
 unstable-msc4274 = []
 
+# MSC4354 sticky events + MSC4480 sticky-events sliding-sync extension.
+# (msc4480 transitively enables msc4354 in ruma.)
+unstable-msc4354 = ["ruma/unstable-msc4480"]
+
 # Add support for user status profile fields (m.status, m.call).
 unstable-msc4426 = ["ruma/unstable-msc4426"]
 

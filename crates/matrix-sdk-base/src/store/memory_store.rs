@@ -44,7 +44,7 @@ use super::{
     RoomLoadSettings, StateChanges, StateStore, StoreError, SupportedVersionsResponse,
     WellKnownResponse,
     send_queue::{ChildTransactionId, QueuedRequest, SentRequestKey},
-    traits::ComposerDraft,
+    traits::{ComposerDraft, PersistedPendingStickyEvent, PersistedStickyEvent},
 };
 use crate::{
     MinimalRoomMemberEvent, RoomMemberships, StateStoreDataKey, StateStoreDataValue,
@@ -89,6 +89,8 @@ struct MemoryStoreInner {
         HashMap<(String, Option<String>), HashMap<OwnedEventId, HashMap<OwnedUserId, Receipt>>>,
     >,
     custom: HashMap<Vec<u8>, Vec<u8>>,
+    sticky_events: HashMap<OwnedRoomId, Vec<PersistedStickyEvent>>,
+    sticky_pending_events: HashMap<OwnedRoomId, Vec<PersistedPendingStickyEvent>>,
     send_queue_events: BTreeMap<OwnedRoomId, Vec<QueuedRequest>>,
     dependent_send_queue_events: BTreeMap<OwnedRoomId, Vec<DependentQueuedRequest>>,
     seen_knock_requests: BTreeMap<OwnedRoomId, BTreeMap<OwnedEventId, OwnedUserId>>,
@@ -211,6 +213,16 @@ impl StateStore for MemoryStore {
                 .homeserver_capabilities
                 .clone()
                 .map(StateStoreDataValue::HomeserverCapabilities),
+            StateStoreDataKey::StickyEvents(room_id) => inner
+                .sticky_events
+                .get(room_id)
+                .cloned()
+                .map(StateStoreDataValue::StickyEvents),
+            StateStoreDataKey::StickyPendingEvents(room_id) => inner
+                .sticky_pending_events
+                .get(room_id)
+                .cloned()
+                .map(StateStoreDataValue::StickyPendingEvents),
         })
     }
 
@@ -293,6 +305,20 @@ impl StateStore for MemoryStore {
                         .expect("Session data is not a homeserver capabilities"),
                 );
             }
+            StateStoreDataKey::StickyEvents(room_id) => {
+                inner.sticky_events.insert(
+                    room_id.to_owned(),
+                    value.into_sticky_events().expect("Session data is not sticky events"),
+                );
+            }
+            StateStoreDataKey::StickyPendingEvents(room_id) => {
+                inner.sticky_pending_events.insert(
+                    room_id.to_owned(),
+                    value
+                        .into_sticky_pending_events()
+                        .expect("Session data is not pending sticky events"),
+                );
+            }
         }
 
         Ok(())
@@ -328,6 +354,12 @@ impl StateStore for MemoryStore {
                 inner.thread_subscriptions_catchup_tokens = None;
             }
             StateStoreDataKey::HomeserverCapabilities => inner.homeserver_capabilities = None,
+            StateStoreDataKey::StickyEvents(room_id) => {
+                inner.sticky_events.remove(room_id);
+            }
+            StateStoreDataKey::StickyPendingEvents(room_id) => {
+                inner.sticky_pending_events.remove(room_id);
+            }
         }
         Ok(())
     }
@@ -838,6 +870,8 @@ impl StateStore for MemoryStore {
         inner.send_queue_events.remove(room_id);
         inner.dependent_send_queue_events.remove(room_id);
         inner.thread_subscriptions.remove(room_id);
+        inner.sticky_events.remove(room_id);
+        inner.sticky_pending_events.remove(room_id);
 
         Ok(())
     }

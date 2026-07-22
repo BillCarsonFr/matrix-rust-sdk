@@ -138,6 +138,14 @@ pub struct BaseClient {
     #[cfg(feature = "e2e-encryption")]
     pub handle_verification_events: bool,
 
+    /// Client-level coordination of sticky events (MSC4354): ingests sticky
+    /// events from sync into the per-room maps, and (with encryption) owns the
+    /// background redecryptor that re-decrypts parked encrypted sticky events
+    /// when their room keys arrive. Per-room sticky maps live on each
+    /// [`Room`](crate::Room).
+    #[cfg(feature = "unstable-msc4354")]
+    pub(crate) sticky_manager: crate::sticky::StickyManager,
+
     /// Whether the client supports threads or not.
     pub threading_support: ThreadingSupport,
 
@@ -205,7 +213,7 @@ impl BaseClient {
     ) -> Self {
         let store = BaseStateStore::new(config.state_store);
 
-        BaseClient {
+        let client = BaseClient {
             state_store: store,
             event_cache_store: config.event_cache_store,
             media_store: config.media_store,
@@ -223,13 +231,24 @@ impl BaseClient {
             },
             #[cfg(feature = "e2e-encryption")]
             handle_verification_events: true,
+            #[cfg(feature = "unstable-msc4354")]
+            sticky_manager: Default::default(),
             threading_support,
             #[cfg(feature = "experimental-x509-identity-verification")]
             x509_signer: None,
             #[cfg(feature = "experimental-x509-identity-verification")]
             x509_verifier: None,
             dm_room_definition,
-        }
+        };
+
+        // Give the sticky manager a handle to the (shared) olm machine + settings
+        // so it can decrypt encrypted sticky events on its own.
+        #[cfg(all(feature = "e2e-encryption", feature = "unstable-msc4354"))]
+        client
+            .sticky_manager
+            .set_decryption_context(client.olm_machine.clone(), client.decryption_settings.clone());
+
+        client
     }
 
     /// Clones the current base client to use the same crypto store but a
@@ -260,6 +279,8 @@ impl BaseClient {
             room_key_recipient_strategy: self.room_key_recipient_strategy.clone(),
             decryption_settings: self.decryption_settings.clone(),
             handle_verification_events,
+            #[cfg(feature = "unstable-msc4354")]
+            sticky_manager: Default::default(),
             threading_support: self.threading_support,
             #[cfg(feature = "experimental-x509-identity-verification")]
             x509_signer: self.x509_signer.clone(),
@@ -267,6 +288,11 @@ impl BaseClient {
             x509_verifier: self.x509_verifier.clone(),
             dm_room_definition: self.dm_room_definition.clone(),
         };
+
+        // Give the sticky manager a handle to the (shared) olm machine + settings.
+        #[cfg(feature = "unstable-msc4354")]
+        copy.sticky_manager
+            .set_decryption_context(copy.olm_machine.clone(), copy.decryption_settings.clone());
 
         copy.state_store.derive_from_other(&self.state_store).await?;
 
@@ -430,7 +456,18 @@ impl BaseClient {
 
         let olm_machine = builder.build().await.map_err(OlmError::from)?;
 
+        // Capture the room-keys stream before moving the machine into the lock,
+        // so the sticky redecryptor (below) reacts to keys from this machine.
+        #[cfg(feature = "unstable-msc4354")]
+        let room_keys_stream = olm_machine.store().room_keys_received_stream();
+
         *self.olm_machine.write().await = Some(olm_machine);
+
+        // (Re)start the sticky-events redecryptor for this OlmMachine, aborting
+        // the one bound to the previous machine (if any).
+        #[cfg(feature = "unstable-msc4354")]
+        self.sticky_manager.start_redecryptor(room_keys_stream, self.state_store.clone());
+
         Ok(())
     }
 

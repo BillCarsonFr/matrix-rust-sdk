@@ -13,8 +13,8 @@
 // limitations under the License.
 
 //! The per-room sticky-events handle: a shareable, in-memory
-//! [`EphemeralMap`] of sticky events (with their encryption data), fed from sync
-//! and expired by a background task.
+//! [`EphemeralMap`] of sticky events (with their encryption data), fed from
+//! sync and expired by a background task.
 
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -369,7 +369,10 @@ mod tests {
         assert_eq!(live_events[0].expires_at_ms, 5_000);
         // It was sent in the clear, so it carries no encryption data.
         assert!(live_events[0].encryption_info().is_none());
-        assert!(live_events[0].raw().deserialize().is_ok());
+        assert_eq!(
+            live_events[0].raw().get_field::<String>("type").unwrap().as_deref(),
+            Some("m.rtc.member")
+        );
     }
 
     #[async_test]

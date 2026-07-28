@@ -213,11 +213,9 @@ impl StateStore for MemoryStore {
                 .homeserver_capabilities
                 .clone()
                 .map(StateStoreDataValue::HomeserverCapabilities),
-            StateStoreDataKey::StickyEvents(room_id) => inner
-                .sticky_events
-                .get(room_id)
-                .cloned()
-                .map(StateStoreDataValue::StickyEvents),
+            StateStoreDataKey::StickyEvents(room_id) => {
+                inner.sticky_events.get(room_id).cloned().map(StateStoreDataValue::StickyEvents)
+            }
             StateStoreDataKey::StickyPendingEvents(room_id) => inner
                 .sticky_pending_events
                 .get(room_id)
@@ -574,18 +572,17 @@ impl StateStore for MemoryStore {
         for (user_id, profile_update) in &changes.global_profiles {
             match profile_update {
                 UserProfileUpdate::Updated(profile_changes) => {
-                    inner
-                        .global_profiles
-                        .entry(user_id.clone())
-                        .or_default()
-                        .apply(profile_changes.clone());
+                    let mut profile =
+                        inner.global_profiles.get(user_id).cloned().unwrap_or_default();
+                    profile.apply(profile_changes.clone());
+                    inner.global_profiles.insert(user_id.clone(), profile);
                 }
+                // The user left all shared rooms, so we stop tracking them.
                 UserProfileUpdate::Dropped => {
                     inner.global_profiles.remove(user_id);
                 }
-                _ => {
-                    warn!(%user_id, "Unhandled UserProfileUpdate variant; ignoring");
-                }
+                // An update kind added to Ruma after this was written.
+                _ => {}
             }
         }
 

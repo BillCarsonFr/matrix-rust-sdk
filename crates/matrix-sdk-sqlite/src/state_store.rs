@@ -1624,36 +1624,41 @@ impl StateStore for SqliteStateStore {
                     }
                 }
 
-                for (raw_user_id, profile_update) in global_profiles {
-                    let user_id = this.encode_key(keys::GLOBAL_PROFILES, &raw_user_id);
-                    match profile_update {
-                        UserProfileUpdate::Updated(profile_changes) => {
-                            let existing_data: Option<Vec<u8>> = txn
-                                .prepare_cached(
-                                    "SELECT profile_data FROM global_profiles WHERE user_id = ?",
-                                )?
-                                .query_row([&user_id], |row| row.get(0))
-                                .optional()?;
+                if !global_profiles.is_empty() {
+                    let mut select_stmt = txn.prepare_cached(
+                        "SELECT profile_data FROM global_profiles WHERE user_id = ?",
+                    )?;
+                    let mut insert_stmt = txn.prepare_cached(
+                        "INSERT OR REPLACE INTO global_profiles (user_id, profile_data) VALUES (?, ?)",
+                    )?;
+                    let mut delete_stmt = txn
+                        .prepare_cached("DELETE FROM global_profiles WHERE user_id = ?")?;
 
-                            let mut profile: UserProfile = existing_data
-                                .map(|data| this.deserialize_json(&data))
-                                .transpose()?
-                                .unwrap_or_default();
-                            profile.apply(profile_changes);
+                    for (user_id, profile_update) in global_profiles {
+                        let user_id = this.encode_key(keys::GLOBAL_PROFILES, &user_id);
 
-                            let serialized = this.serialize_json(&profile)?;
-                            txn.prepare_cached(
-                                "INSERT OR REPLACE INTO global_profiles (user_id, profile_data) VALUES (?, ?)",
-                            )?
-                            .execute((&user_id, serialized))?;
-                        }
-                        // The user left all shared rooms, so drop their stored profile.
-                        UserProfileUpdate::Dropped => {
-                            txn.prepare_cached("DELETE FROM global_profiles WHERE user_id = ?")?
-                                .execute([&user_id])?;
-                        }
-                        _ => {
-                            warn!(%raw_user_id, "Unhandled UserProfileUpdate variant; ignoring");
+                        match profile_update {
+                            UserProfileUpdate::Updated(changes) => {
+                                let existing_data: Option<Vec<u8>> =
+                                    select_stmt.query_row([&user_id], |row| row.get(0)).optional()?;
+
+                                let mut profile: UserProfile = existing_data
+                                    .map(|data| this.deserialize_json(&data))
+                                    .transpose()?
+                                    .unwrap_or_default();
+                                profile.apply(changes);
+
+                                let serialized = this.serialize_json(&profile)?;
+                                insert_stmt.execute((&user_id, serialized))?;
+                            }
+                            // The user left all shared rooms, so we stop
+                            // tracking them.
+                            UserProfileUpdate::Dropped => {
+                                delete_stmt.execute([&user_id])?;
+                            }
+                            // An update kind added to Ruma after this was
+                            // written.
+                            _ => {}
                         }
                     }
                 }

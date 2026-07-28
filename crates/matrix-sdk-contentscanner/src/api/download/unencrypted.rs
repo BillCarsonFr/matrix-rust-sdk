@@ -62,6 +62,8 @@ impl OutgoingRequest for DownloadAndScanMediaRequest {
     type EndpointError = RumaApiError;
     type IncomingResponse = DownloadAndScanMediaResponse;
 
+    // The access token is added by `OutgoingRequestExt::try_into_http_request`,
+    // through this endpoint's `AccessTokenOptional` scheme.
     fn try_into_http_request_inner(
         self,
         _base_url: &str,

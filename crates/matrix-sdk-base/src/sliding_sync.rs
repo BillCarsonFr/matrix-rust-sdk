@@ -331,7 +331,7 @@ mod tests {
             },
         },
         mxc_uri, owned_event_id, owned_mxc_uri, owned_user_id,
-        profile::{ProfileFieldName, UserProfileChanges, UserProfileUpdate},
+        profile::{ProfileFieldValue, UserProfileChanges, UserProfileUpdate},
         room_alias_id, room_id,
         serde::Raw,
         uint, user_id,
@@ -505,7 +505,10 @@ mod tests {
         assert_eq!(live[0].key.sticky_key.as_deref(), Some("slot"));
         // Sent in the clear, so there is no encryption data to expose.
         assert!(live[0].encryption_info().is_none());
-        assert!(live[0].raw().deserialize().is_ok());
+        assert_eq!(
+            live[0].raw().get_field::<String>("type").unwrap().as_deref(),
+            Some("m.rtc.member")
+        );
     }
 
     #[cfg(feature = "unstable-msc4354")]
@@ -608,6 +611,15 @@ mod tests {
             .expect("Failed to process sync");
     }
 
+    /// A profile update setting the given fields, leaving the others unchanged.
+    fn profile_update(fields: impl IntoIterator<Item = ProfileFieldValue>) -> UserProfileUpdate {
+        let mut changes = UserProfileChanges::new();
+        for field in fields {
+            changes.insert_updated_value(field);
+        }
+        UserProfileUpdate::Updated(changes)
+    }
+
     #[async_test]
     async fn test_profiles_extension_is_persisted_from_sliding_sync() {
         let client = logged_in_base_client(None).await;
@@ -620,11 +632,11 @@ mod tests {
         let mut response = http::Response::new("0".to_owned());
         response.extensions.profiles.users.insert(
             alice.to_owned(),
-            make_profile_update(ProfileFieldName::DisplayName, json!("Alice")),
+            profile_update([ProfileFieldValue::DisplayName("Alice".to_owned())]),
         );
         response.extensions.profiles.users.insert(
             bob.to_owned(),
-            make_profile_update(ProfileFieldName::DisplayName, json!("Bob")),
+            profile_update([ProfileFieldValue::DisplayName("Bob".to_owned())]),
         );
 
         // When the response is processed.
@@ -660,7 +672,7 @@ mod tests {
         let mut response = http::Response::new("1".to_owned());
         response.extensions.profiles.users.insert(
             alice.to_owned(),
-            make_profile_update(ProfileFieldName::DisplayName, json!("Alice Updated")),
+            profile_update([ProfileFieldValue::DisplayName("Alice Updated".to_owned())]),
         );
 
         client

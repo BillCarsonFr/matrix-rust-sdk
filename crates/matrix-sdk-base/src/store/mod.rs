@@ -100,8 +100,8 @@ pub use self::{
         ComposerDraft, ComposerDraftType, DraftAttachment, DraftAttachmentContent, DraftThumbnail,
         DynStateStore, IncorrectMutexGuardError, IntoStateStore, PersistedPendingStickyEvent,
         PersistedStickyEvent, SaveLockedStateStore, StateStore, StateStoreDataKey,
-        StateStoreDataValue, StateStoreExt, SupportedVersionsResponse, ThreadSubscriptionCatchupToken,
-        WellKnownResponse,
+        StateStoreDataValue, StateStoreExt, SupportedVersionsResponse,
+        ThreadSubscriptionCatchupToken, WellKnownResponse,
     },
 };
 
@@ -608,8 +608,11 @@ pub struct StateChanges {
     /// A mapping of `UserId` to global `UserProfile` updates, as defined in
     /// MSC4262.
     ///
-    /// These follow the MSC4262 update pattern: fields with an explicit `null`
-    /// value are removed, while fields that aren't present are left unchanged.
+    /// A [`UserProfileUpdate::Updated`] carries the changed fields to apply to
+    /// the stored profile (fields it lists as removed are dropped, fields it
+    /// doesn't mention are left unchanged); a [`UserProfileUpdate::Dropped`]
+    /// means the user has left all shared rooms, so their stored profile is
+    /// deleted.
     pub global_profiles: BTreeMap<OwnedUserId, UserProfileUpdate>,
 }
 

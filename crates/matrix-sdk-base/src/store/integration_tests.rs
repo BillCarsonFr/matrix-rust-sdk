@@ -37,7 +37,7 @@ use ruma::{
     },
     mxc_uri, owned_event_id, owned_mxc_uri,
     presence::PresenceState,
-    profile::{ProfileFieldName, UserProfileChanges, UserProfileUpdate},
+    profile::{ProfileFieldName, ProfileFieldValue, UserProfileChanges, UserProfileUpdate},
     push::Ruleset,
     room_id,
     room_version_rules::AuthorizationRules,
@@ -2243,10 +2243,11 @@ impl StateStoreIntegrationTests for DynStateStore {
 
         assert_matches!(self.get_global_profile(user_id).await, Ok(None));
 
-        let mut changes = UserProfileChanges::new();
-        changes.updated.insert(ProfileFieldName::DisplayName, json!("Alice"));
-        changes.removed.push(ProfileFieldName::AvatarUrl);
-        let update = UserProfileUpdate::Updated(changes);
+        // Setting one field and removing another that was never set.
+        let update = profile_update(
+            [ProfileFieldValue::DisplayName("Alice".to_owned())],
+            [ProfileFieldName::AvatarUrl],
+        );
 
         let mut changes = StateChanges::default();
         changes.global_profiles.insert(user_id.to_owned(), update);
@@ -2257,10 +2258,11 @@ impl StateStoreIntegrationTests for DynStateStore {
         assert_eq!(loaded_map.get("displayname"), Some(&json!("Alice")));
         assert!(!loaded_map.contains_key("avatar_url"));
 
-        let mut changes = UserProfileChanges::new();
-        changes.removed.push(ProfileFieldName::DisplayName);
-        changes.updated.insert(ProfileFieldName::AvatarUrl, json!("mxc://example.com/avatar"));
-        let update2 = UserProfileUpdate::Updated(changes);
+        // The reverse: the previously-set field is removed, the other one set.
+        let update2 = profile_update(
+            [ProfileFieldValue::AvatarUrl(owned_mxc_uri!("mxc://example.com/avatar"))],
+            [ProfileFieldName::DisplayName],
+        );
 
         let mut changes = StateChanges::default();
         changes.global_profiles.insert(user_id.to_owned(), update2);
@@ -2271,6 +2273,14 @@ impl StateStoreIntegrationTests for DynStateStore {
         assert!(!loaded_map2.contains_key("displayname"));
         assert_eq!(loaded_map2.get("avatar_url"), Some(&json!("mxc://example.com/avatar")));
 
+        // A dropped update means the user left all shared rooms, so their stored
+        // profile goes away entirely.
+        let mut changes = StateChanges::default();
+        changes.global_profiles.insert(user_id.to_owned(), UserProfileUpdate::Dropped);
+        self.save_changes(&changes).await?;
+
+        assert_matches!(self.get_global_profile(user_id).await, Ok(None));
+
         Ok(())
     }
 
@@ -2280,16 +2290,14 @@ impl StateStoreIntegrationTests for DynStateStore {
         let unknown = user_id!("@unknown:localhost");
 
         let mut changes = StateChanges::default();
-        changes.global_profiles.insert(alice.to_owned(), {
-            let mut profile_changes = UserProfileChanges::new();
-            profile_changes.updated.insert(ProfileFieldName::DisplayName, json!("Alice"));
-            UserProfileUpdate::Updated(profile_changes)
-        });
-        changes.global_profiles.insert(bob.to_owned(), {
-            let mut profile_changes = UserProfileChanges::new();
-            profile_changes.updated.insert(ProfileFieldName::DisplayName, json!("Bob"));
-            UserProfileUpdate::Updated(profile_changes)
-        });
+        changes.global_profiles.insert(
+            alice.to_owned(),
+            profile_update([ProfileFieldValue::DisplayName("Alice".to_owned())], []),
+        );
+        changes.global_profiles.insert(
+            bob.to_owned(),
+            profile_update([ProfileFieldValue::DisplayName("Bob".to_owned())], []),
+        );
         self.save_changes(&changes).await?;
 
         // The bulk getter returns the stored profiles and omits unknown users.
@@ -2533,6 +2541,20 @@ macro_rules! statestore_integration_tests {
 
 fn user_id() -> &'static UserId {
     user_id!("@example:localhost")
+}
+
+/// A profile update that sets the `updated` fields and removes the `removed`
+/// ones, leaving any other stored field unchanged.
+fn profile_update(
+    updated: impl IntoIterator<Item = ProfileFieldValue>,
+    removed: impl IntoIterator<Item = ProfileFieldName>,
+) -> UserProfileUpdate {
+    let mut changes = UserProfileChanges::new();
+    for value in updated {
+        changes.insert_updated_value(value);
+    }
+    changes.removed.extend(removed);
+    UserProfileUpdate::Updated(changes)
 }
 
 fn invited_user_id() -> &'static UserId {

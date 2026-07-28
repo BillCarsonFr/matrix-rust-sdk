@@ -33,10 +33,9 @@ use matrix_sdk_base::{
     store::{
         ChildTransactionId, ComposerDraft, DependentQueuedRequest, DependentQueuedRequestKind,
         PersistedPendingStickyEvent, PersistedStickyEvent, QueuedRequest, QueuedRequestKind,
-        RoomLoadSettings, SentRequestKey,
-        SerializableEventContent, StateChanges, StateStore, StoreError, StoredThreadSubscription,
-        SupportedVersionsResponse, ThreadSubscriptionStatus, WellKnownResponse,
-        compare_thread_subscription_bump_stamps,
+        RoomLoadSettings, SentRequestKey, SerializableEventContent, StateChanges, StateStore,
+        StoreError, StoredThreadSubscription, SupportedVersionsResponse, ThreadSubscriptionStatus,
+        WellKnownResponse, compare_thread_subscription_bump_stamps,
     },
     ttl::TtlValue,
 };
@@ -1129,6 +1128,7 @@ impl_state_store!({
             let store = tx.object_store(keys::GLOBAL_PROFILES)?;
             for (user_id, profile_update) in &changes.global_profiles {
                 let key = self.encode_key(keys::GLOBAL_PROFILES, user_id);
+
                 match profile_update {
                     UserProfileUpdate::Updated(profile_changes) => {
                         let existing: Option<UserProfile> = store
@@ -1142,12 +1142,12 @@ impl_state_store!({
 
                         store.put(&self.serialize_value(&profile)?).with_key(key).build()?;
                     }
+                    // The user left all shared rooms, so we stop tracking them.
                     UserProfileUpdate::Dropped => {
                         store.delete(&key).build()?;
                     }
-                    _ => {
-                        warn!(%user_id, "Unhandled UserProfileUpdate variant; ignoring");
-                    }
+                    // An update kind added to Ruma after this was written.
+                    _ => {}
                 }
             }
         }

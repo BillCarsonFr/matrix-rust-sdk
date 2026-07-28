@@ -19,7 +19,7 @@ use ruma::{
         error::IntoHttpError, path_builder::PathBuilder,
     },
     events::room::EncryptedFile,
-    exports::http::Request,
+    exports::{http::Request, serde_json},
     metadata,
 };
 
@@ -59,6 +59,8 @@ impl OutgoingRequest for EncryptedMediaScanRequest {
     type EndpointError = RumaApiError;
     type IncomingResponse = MediaScanResponse;
 
+    // The access token is added by `OutgoingRequestExt::try_into_http_request`,
+    // through this endpoint's `AccessTokenOptional` scheme.
     fn try_into_http_request_inner(
         self,
         _base_url: &str,
@@ -67,7 +69,7 @@ impl OutgoingRequest for EncryptedMediaScanRequest {
         let url = Self::make_endpoint_url(path_builder_input, &self.scanner_url, &[], "")?;
 
         let body = encrypted_file_request_from(self.public_key, &self.encrypted_file)?;
-        let body = BytesBody(ruma::serde::json_to_buf(&body)?);
+        let body = BytesBody(serde_json::to_vec(&body)?);
 
         Ok(Request::builder().method(Self::METHOD).uri(url).body(body)?)
     }

@@ -77,7 +77,8 @@ enum Change {
 /// Changes are broadcast to [`subscribe`](Self::subscribe)rs.
 ///
 /// It is generic over the stored value `V` so it can be unit-tested in
-/// isolation; in production `V` is `Raw<AnySyncTimelineEvent>`.
+/// isolation; in production `V` is
+/// [`TimelineEventKind`](matrix_sdk_common::deserialized_responses::TimelineEventKind).
 #[derive(Debug)]
 pub struct EphemeralMap<V> {
     /// The live entries, one per key.

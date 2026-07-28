@@ -25,9 +25,10 @@
 
 use std::collections::BTreeMap;
 
+use matrix_sdk_common::deserialized_responses::TimelineEventKind;
 use ruma::{
-    OwnedRoomId, RoomId, api::client::sync::sync_events::v5 as http,
-    events::AnySyncTimelineEvent, serde::Raw,
+    OwnedRoomId, RoomId, api::client::sync::sync_events::v5 as http, events::AnySyncTimelineEvent,
+    serde::Raw,
 };
 
 use super::{StickyCandidate, StickyExtract, classify};
@@ -39,8 +40,9 @@ use crate::{error::Result, store::BaseStateStore};
 /// received (so a decryption retry does not reset its TTL).
 type PendingEvent = (u64, Raw<AnySyncTimelineEvent>);
 
-/// A resolved sticky event, ready to upsert into the map.
-type ResolvedEvent = (StickyCandidate, Raw<AnySyncTimelineEvent>);
+/// A resolved sticky event, ready to upsert into the map, together with its
+/// encryption data.
+type ResolvedEvent = (StickyCandidate, TimelineEventKind);
 
 /// What the manager needs to decrypt encrypted sticky events: a (shared) handle
 /// to the client's `OlmMachine` and the decryption settings. An
@@ -190,8 +192,7 @@ impl StickyManager {
         // Without a decryption context there is nothing to decrypt.
         let Some(context) = self.decryption.get().cloned() else { return };
 
-        let task =
-            spawn(run_redecryptor(room_keys_stream, context, state_store)).abort_on_drop();
+        let task = spawn(run_redecryptor(room_keys_stream, context, state_store)).abort_on_drop();
 
         // Replacing the handle drops (and thus aborts) the previous task.
         *self.redecryptor.lock().unwrap() = Some(task);
@@ -216,7 +217,9 @@ async fn resolve_inputs(
     for (received_ts, raw) in inputs {
         match classify(received_ts, &raw) {
             StickyExtract::NotSticky => {}
-            StickyExtract::Sticky(candidate) => resolved.push((candidate, raw)),
+            StickyExtract::Sticky(candidate) => {
+                resolved.push((candidate, TimelineEventKind::PlainText { event: raw }))
+            }
             StickyExtract::NeedsDecryption(_meta) => {
                 #[cfg(feature = "e2e-encryption")]
                 if let Some(e2ee) = e2ee {
@@ -226,16 +229,15 @@ async fn resolve_inputs(
                         );
                     match e2ee::decrypt::sync_timeline_event(e2ee, &event, room_id).await {
                         Ok(Some(decrypted)) => {
-                            let decrypted_raw = decrypted.raw().clone();
-                            // A UTD keeps the outer `m.room.encrypted` type; a
-                            // real decryption exposes the content.
-                            let still_encrypted =
-                                decrypted_raw.get_field::<String>("type").ok().flatten().as_deref()
-                                    == Some("m.room.encrypted");
-                            if still_encrypted {
+                            // We can't key a UTD (its type and `sticky_key` are in
+                            // the encrypted content), so park it and let the
+                            // redecryptor retry once the room key arrives.
+                            if decrypted.kind.is_utd() {
                                 pending.push((received_ts, raw));
-                            } else if let Some(candidate) = super::resolve(_meta, &decrypted_raw) {
-                                resolved.push((candidate, decrypted_raw));
+                            } else if let Some(candidate) = super::resolve(_meta, decrypted.raw()) {
+                                // Keep the whole kind, so the encryption data
+                                // (sender device, verification state) survives.
+                                resolved.push((candidate, decrypted.kind));
                             }
                         }
                         // No olm machine (yet): park.

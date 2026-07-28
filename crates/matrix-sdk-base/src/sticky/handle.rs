@@ -13,12 +13,15 @@
 // limitations under the License.
 
 //! The per-room sticky-events handle: a shareable, in-memory
-//! [`EphemeralMap`] of raw sticky events, fed from sync and expired by a
-//! background task.
+//! [`EphemeralMap`] of sticky events (with their encryption data), fed from sync
+//! and expired by a background task.
 
 use std::sync::{Arc, Mutex, OnceLock};
 
-use matrix_sdk_common::executor::AbortOnDrop;
+use matrix_sdk_common::{
+    deserialized_responses::{EncryptionInfo, TimelineEventKind},
+    executor::AbortOnDrop,
+};
 use ruma::{OwnedEventId, OwnedRoomId, events::AnySyncTimelineEvent, serde::Raw};
 use tokio::sync::{Notify, broadcast};
 
@@ -39,10 +42,30 @@ pub struct StickyLiveEvent {
     pub key: StickyKey,
     /// The event id.
     pub event_id: OwnedEventId,
-    /// The raw sticky event.
-    pub event: Raw<AnySyncTimelineEvent>,
+    /// The sticky event, together with its encryption data (see
+    /// [`Self::encryption_info`]).
+    ///
+    /// Only [`TimelineEventKind::PlainText`] and
+    /// [`TimelineEventKind::Decrypted`] occur here: the map key of an encrypted
+    /// sticky event (its type and `content.sticky_key`) lives in the encrypted
+    /// content, so an event we cannot decrypt is parked rather than filed in
+    /// the map, and only shows up once its room key arrives.
+    pub kind: TimelineEventKind,
     /// Absolute expiry time in milliseconds since the Unix epoch.
     pub expires_at_ms: u64,
+}
+
+impl StickyLiveEvent {
+    /// The raw sticky event; the decrypted one, if it was sent encrypted.
+    pub fn raw(&self) -> &Raw<AnySyncTimelineEvent> {
+        self.kind.raw()
+    }
+
+    /// The encryption data of this event, or `None` if it was sent in the
+    /// clear.
+    pub fn encryption_info(&self) -> Option<&Arc<EncryptionInfo>> {
+        self.kind.encryption_info()
+    }
 }
 
 /// The per-room store of currently-live sticky events.
@@ -50,7 +73,8 @@ pub struct StickyLiveEvent {
 /// This is a cheap-to-clone handle: clones share the same underlying map and
 /// the single background maintenance task (TTL eviction plus write-through
 /// persistence), which is aborted once the last clone is dropped. It is held on
-/// [`Room`](crate::Room), persisted to the state store, and reloaded on startup.
+/// [`Room`](crate::Room), persisted to the state store, and reloaded on
+/// startup.
 #[derive(Clone, Debug)]
 pub struct StickyEvents {
     inner: Arc<StickyEventsInner>,
@@ -58,16 +82,17 @@ pub struct StickyEvents {
 
 #[derive(Debug)]
 struct StickyEventsInner {
-    map: Arc<Mutex<EphemeralMap<Raw<AnySyncTimelineEvent>>>>,
+    map: Arc<Mutex<EphemeralMap<TimelineEventKind>>>,
     /// Encrypted sticky events awaiting decryption, with the local time each
     /// was first received (so a retry does not reset its TTL). Drained and
     /// retried by the redecryptor when room keys arrive; without encryption
     /// support nothing reads it (parked events can never be decrypted). Shared
-    /// via `Arc` so the persistence task can snapshot it without a cycle back to
-    /// this inner.
+    /// via `Arc` so the persistence task can snapshot it without a cycle back
+    /// to this inner.
     pending: Arc<Mutex<Vec<ParkedEvent>>>,
-    /// Notified when `pending` changes (park / take_pending), so the maintenance
-    /// task persists it (those don't go through the map's change broadcast).
+    /// Notified when `pending` changes (park / take_pending), so the
+    /// maintenance task persists it (those don't go through the map's
+    /// change broadcast).
     pending_changed: Arc<Notify>,
     /// The store + room this map persists to, if any. `None` in unit tests that
     /// exercise the map without a store.
@@ -86,8 +111,8 @@ struct PersistContext {
 }
 
 impl StickyEvents {
-    /// Create a new, empty handle driven by the real system clock, persisting to
-    /// `store` under `room_id`.
+    /// Create a new, empty handle driven by the real system clock, persisting
+    /// to `store` under `room_id`.
     pub(crate) fn new(store: SaveLockedStateStore, room_id: OwnedRoomId) -> Self {
         Self::build(Arc::new(SystemClock), Some(PersistContext { store, room_id }))
     }
@@ -143,7 +168,7 @@ impl StickyEvents {
             .map(|e| {
                 (
                     StickyKey::new(e.sender, e.event_type, e.sticky_key),
-                    e.event,
+                    e.kind,
                     e.event_id,
                     e.end_time,
                     false,
@@ -158,9 +183,9 @@ impl StickyEvents {
     }
 
     /// Load the parked (encrypted) buffer from persisted events, dropping any
-    /// whose maximum possible lifetime (`received_ts` + the max TTL) has already
-    /// passed, so a UTD event whose keys never arrived isn't kept forever. Starts
-    /// the maintenance task when anything was loaded.
+    /// whose maximum possible lifetime (`received_ts` + the max TTL) has
+    /// already passed, so a UTD event whose keys never arrived isn't kept
+    /// forever. Starts the maintenance task when anything was loaded.
     pub(crate) fn load_pending(&self, events: Vec<PersistedPendingStickyEvent>) {
         let now = self.now_ms();
         let restored: Vec<_> = events
@@ -181,10 +206,11 @@ impl StickyEvents {
     }
 
     /// Apply a batch of already-resolved sticky candidates (plaintext, or
-    /// decrypted) to the map. `value` is the event stored for each candidate.
+    /// decrypted) to the map. `value` is the event stored for each candidate,
+    /// together with its encryption data.
     pub(crate) fn ingest_candidates(
         &self,
-        items: impl IntoIterator<Item = (StickyCandidate, Raw<AnySyncTimelineEvent>)>,
+        items: impl IntoIterator<Item = (StickyCandidate, TimelineEventKind)>,
     ) {
         let batch: Vec<_> = items
             .into_iter()
@@ -239,7 +265,7 @@ impl StickyEvents {
             .map(|(key, entry)| StickyLiveEvent {
                 key: key.clone(),
                 event_id: entry.event_id.clone(),
-                event: entry.value.clone(),
+                kind: entry.value.clone(),
                 expires_at_ms: entry.end_time,
             })
             .collect()
@@ -248,7 +274,7 @@ impl StickyEvents {
 
 /// Build a serializable snapshot of the map's currently-live entries, for
 /// write-through persistence.
-fn live_snapshot(map: &Mutex<EphemeralMap<Raw<AnySyncTimelineEvent>>>) -> Vec<PersistedStickyEvent> {
+fn live_snapshot(map: &Mutex<EphemeralMap<TimelineEventKind>>) -> Vec<PersistedStickyEvent> {
     let guard = map.lock().unwrap();
     guard
         .iter_live()
@@ -258,7 +284,7 @@ fn live_snapshot(map: &Mutex<EphemeralMap<Raw<AnySyncTimelineEvent>>>) -> Vec<Pe
             sticky_key: key.sticky_key.clone(),
             event_id: entry.event_id.clone(),
             end_time: entry.end_time,
-            event: entry.value.clone(),
+            kind: entry.value.clone(),
         })
         .collect()
 }
@@ -280,6 +306,7 @@ fn pending_snapshot(pending: &Mutex<Vec<ParkedEvent>>) -> Vec<PersistedPendingSt
 mod tests {
     use std::{sync::Arc, time::Duration};
 
+    use matrix_sdk_common::deserialized_responses::TimelineEventKind;
     use matrix_sdk_test::async_test;
     use ruma::{
         RoomId, events::AnySyncTimelineEvent, owned_event_id, owned_user_id, room_id, serde::Raw,
@@ -306,6 +333,12 @@ mod tests {
         .unwrap()
     }
 
+    /// The plaintext event kind stored for a sticky event that was sent in the
+    /// clear.
+    fn plaintext_event() -> TimelineEventKind {
+        TimelineEventKind::PlainText { event: raw_event() }
+    }
+
     fn persisted(end_time: u64) -> PersistedStickyEvent {
         PersistedStickyEvent {
             sender: owned_user_id!("@alice:localhost"),
@@ -313,7 +346,7 @@ mod tests {
             sticky_key: Some("slot".to_owned()),
             event_id: owned_event_id!("$sticky:localhost"),
             end_time,
-            event: raw_event(),
+            kind: plaintext_event(),
         }
     }
 
@@ -334,6 +367,9 @@ mod tests {
         assert_eq!(live_events.len(), 1, "only the non-expired entry should survive loading");
         assert_eq!(live_events[0].key.sticky_key.as_deref(), Some("slot"));
         assert_eq!(live_events[0].expires_at_ms, 5_000);
+        // It was sent in the clear, so it carries no encryption data.
+        assert!(live_events[0].encryption_info().is_none());
+        assert!(live_events[0].raw().deserialize().is_ok());
     }
 
     #[async_test]
@@ -354,7 +390,7 @@ mod tests {
             end_time,
             is_removal: false,
         };
-        handle.ingest_candidates([(candidate, raw_event())]);
+        handle.ingest_candidates([(candidate, plaintext_event())]);
 
         // The background maintenance task writes the live set through to the
         // store; wait for it to appear.
@@ -378,6 +414,23 @@ mod tests {
         assert_eq!(persisted.len(), 1);
         assert_eq!(persisted[0].sticky_key.as_deref(), Some("slot"));
         assert_eq!(persisted[0].end_time, end_time);
+
+        // The persisted entry survives a JSON round-trip (the on-disk encoding of
+        // the sticky kv data) and reloads into a fresh map.
+        let json = serde_json::to_string(&persisted).expect("persisted events should serialize");
+        let restored: Vec<PersistedStickyEvent> =
+            serde_json::from_str(&json).expect("persisted events should deserialize");
+
+        let reloaded = StickyEvents::new(store, room_id.to_owned());
+        reloaded.load(restored);
+
+        let live = reloaded.live();
+        assert_eq!(live.len(), 1);
+        assert!(live[0].encryption_info().is_none());
+        assert_eq!(
+            live[0].raw().get_field::<String>("type").unwrap().as_deref(),
+            Some("m.rtc.member")
+        );
     }
 
     #[async_test]

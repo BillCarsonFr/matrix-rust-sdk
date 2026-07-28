@@ -39,10 +39,10 @@ use ruma::{
     },
     events::{
         AnyGlobalAccountDataEvent, AnyRoomAccountDataEvent, AnySyncTimelineEvent, EmptyStateKey,
-        GlobalAccountDataEvent,
-        GlobalAccountDataEventContent, GlobalAccountDataEventType, RedactContent,
-        RedactedStateEventContent, RoomAccountDataEvent, RoomAccountDataEventContent,
-        RoomAccountDataEventType, StateEventType, StaticEventContent, StaticStateEventContent,
+        GlobalAccountDataEvent, GlobalAccountDataEventContent, GlobalAccountDataEventType,
+        RedactContent, RedactedStateEventContent, RoomAccountDataEvent,
+        RoomAccountDataEventContent, RoomAccountDataEventType, StateEventType, StaticEventContent,
+        StaticStateEventContent,
         presence::PresenceEvent,
         receipt::{Receipt, ReceiptThread, ReceiptType},
     },
@@ -62,6 +62,7 @@ use crate::{
     MinimalRoomMemberEvent, RoomInfo, RoomMemberships,
     deserialized_responses::{
         DisplayName, RawAnySyncOrStrippedState, RawMemberEvent, RawSyncOrStrippedState,
+        TimelineEventKind,
     },
     store::StoredThreadSubscription,
 };
@@ -2243,11 +2244,12 @@ pub enum StateStoreDataValue {
 
 /// A single currently-live sticky event ([MSC4354]), as persisted in the store.
 ///
-/// This is the on-disk representation of one entry of the in-memory sticky-event
-/// map. It is self-contained (it carries the full event, not just an id) because
-/// section-delivered sticky events never reach any timeline store, so there is
-/// nothing to resolve an id against. Stored per room so the map can be rebuilt
-/// on the next load without waiting for a sync to re-deliver it.
+/// This is the on-disk representation of one entry of the in-memory
+/// sticky-event map. It is self-contained (it carries the full event, not just
+/// an id) because section-delivered sticky events never reach any timeline
+/// store, so there is nothing to resolve an id against. Stored per room so the
+/// map can be rebuilt on the next load without waiting for a sync to re-deliver
+/// it.
 ///
 /// [MSC4354]: https://github.com/matrix-org/matrix-spec-proposals/pull/4354
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2262,16 +2264,19 @@ pub struct PersistedStickyEvent {
     pub event_id: OwnedEventId,
     /// Absolute expiry time in milliseconds since the Unix epoch.
     pub end_time: u64,
-    /// The full, decrypted sticky event.
-    pub event: Raw<AnySyncTimelineEvent>,
+    /// The full sticky event — decrypted, if it was sent encrypted — together
+    /// with its encryption data, so the sender device and verification state
+    /// survive a restart.
+    pub kind: TimelineEventKind,
 }
 
 /// A single encrypted sticky event ([MSC4354]) parked awaiting decryption, as
 /// persisted in the store.
 ///
-/// Persisted separately from [`PersistedStickyEvent`] (it is still encrypted) so
-/// that, after a restart, room keys arriving later can still decrypt it — the
-/// sliding-sync extension only backfills incrementally and won't re-deliver it.
+/// Persisted separately from [`PersistedStickyEvent`] (it is still encrypted)
+/// so that, after a restart, room keys arriving later can still decrypt it —
+/// the sliding-sync extension only backfills incrementally and won't re-deliver
+/// it.
 ///
 /// [MSC4354]: https://github.com/matrix-org/matrix-spec-proposals/pull/4354
 #[derive(Debug, Clone, Serialize, Deserialize)]

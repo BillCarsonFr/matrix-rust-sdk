@@ -503,6 +503,9 @@ mod tests {
         let live = room.live_sticky_events();
         assert_eq!(live.len(), 1);
         assert_eq!(live[0].key.sticky_key.as_deref(), Some("slot"));
+        // Sent in the clear, so there is no encryption data to expose.
+        assert!(live[0].encryption_info().is_none());
+        assert!(live[0].raw().deserialize().is_ok());
     }
 
     #[cfg(feature = "unstable-msc4354")]

@@ -49,6 +49,8 @@ use ruma::{
 use tracing::error;
 
 use self::{power_levels::RoomPowerLevels, room_info::RoomInfo};
+#[cfg(feature = "unstable-msc4354")]
+use crate::timeline::ShieldState;
 use crate::{
     TaskHandle,
     chunk_iterator::ChunkIterator,
@@ -1503,20 +1505,74 @@ pub struct StickyEvent {
     pub event_id: String,
     /// Absolute expiry time in milliseconds since the Unix epoch.
     pub expires_at_ms: u64,
-    /// The full sticky event, as a JSON string.
+    /// The full sticky event, as a JSON string. Decrypted, if it was sent
+    /// encrypted.
     pub event_json: String,
+    /// The encryption data of this event, or `None` if it was sent in the
+    /// clear.
+    pub encryption_info: Option<StickyEventEncryptionInfo>,
+}
+
+/// The encryption data of a sticky event that was sent encrypted (and which we
+/// managed to decrypt).
+#[cfg(feature = "unstable-msc4354")]
+#[derive(uniffi::Record)]
+pub struct StickyEventEncryptionInfo {
+    /// The device the event was sent from, as claimed by the sender.
+    pub sender_device_id: Option<String>,
+    /// The curve25519 key of the device that sent the event.
+    pub sender_curve25519_key: Option<String>,
+    /// The megolm session the event was sent in, if it was sent with megolm.
+    pub session_id: Option<String>,
+    /// The shield to show for this event, lax interpretation.
+    pub shield_state: ShieldState,
+    /// The shield to show for this event, strict interpretation.
+    pub shield_state_strict: ShieldState,
+}
+
+#[cfg(feature = "unstable-msc4354")]
+impl From<&matrix_sdk_base::deserialized_responses::EncryptionInfo> for StickyEventEncryptionInfo {
+    fn from(info: &matrix_sdk_base::deserialized_responses::EncryptionInfo) -> Self {
+        use matrix_sdk_base::deserialized_responses::AlgorithmInfo;
+        use matrix_sdk_ui::timeline::TimelineEventShieldState;
+
+        let sender_curve25519_key = match &info.algorithm_info {
+            AlgorithmInfo::MegolmV1AesSha2 { curve25519_key, .. } => Some(curve25519_key.clone()),
+            AlgorithmInfo::OlmV1Curve25519AesSha2 { curve25519_public_key_base64 } => {
+                Some(curve25519_public_key_base64.clone())
+            }
+        };
+
+        Self {
+            sender_device_id: info.sender_device.as_ref().map(ToString::to_string),
+            sender_curve25519_key,
+            session_id: info.session_id().map(ToOwned::to_owned),
+            shield_state: TimelineEventShieldState::from(
+                info.verification_state.to_shield_state_lax(),
+            )
+            .into(),
+            shield_state_strict: TimelineEventShieldState::from(
+                info.verification_state.to_shield_state_strict(),
+            )
+            .into(),
+        }
+    }
 }
 
 #[cfg(feature = "unstable-msc4354")]
 impl From<matrix_sdk_base::sticky::StickyLiveEvent> for StickyEvent {
     fn from(event: matrix_sdk_base::sticky::StickyLiveEvent) -> Self {
+        let event_json = event.raw().json().get().to_owned();
+        let encryption_info = event.encryption_info().map(|info| info.as_ref().into());
+
         Self {
             sender: event.key.sender.to_string(),
             event_type: event.key.event_type,
             sticky_key: event.key.sticky_key,
             event_id: event.event_id.to_string(),
             expires_at_ms: event.expires_at_ms,
-            event_json: event.event.json().get().to_owned(),
+            event_json,
+            encryption_info,
         }
     }
 }

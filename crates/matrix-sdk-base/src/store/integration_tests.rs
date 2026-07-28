@@ -52,10 +52,11 @@ use super::{
 };
 use crate::{
     RoomInfo, RoomMemberships, RoomState, StateChanges, StateStoreDataKey, StateStoreDataValue,
-    deserialized_responses::MemberEvent,
+    deserialized_responses::{MemberEvent, TimelineEventKind},
     store::{
         ChildTransactionId, PersistedPendingStickyEvent, PersistedStickyEvent, QueueWedgeError,
-        SerializableEventContent, StateStoreExt, StoredThreadSubscription, ThreadSubscriptionStatus,
+        SerializableEventContent, StateStoreExt, StoredThreadSubscription,
+        ThreadSubscriptionStatus,
     },
     utils::RawStateEventWithKeys,
 };
@@ -688,7 +689,7 @@ impl StateStoreIntegrationTests for DynStateStore {
             sticky_key: Some("slot".to_owned()),
             event_id: owned_event_id!("$sticky1:localhost"),
             end_time: 1_000,
-            event,
+            kind: TimelineEventKind::PlainText { event },
         }];
 
         self.set_kv_data(
@@ -710,6 +711,12 @@ impl StateStoreIntegrationTests for DynStateStore {
         assert_eq!(read[0].sticky_key.as_deref(), Some("slot"));
         assert_eq!(read[0].event_id, owned_event_id!("$sticky1:localhost"));
         assert_eq!(read[0].end_time, 1_000);
+        // The event round-trips, and a plaintext one carries no encryption data.
+        assert_eq!(
+            read[0].kind.raw().get_field::<String>("type")?.as_deref(),
+            Some("m.rtc.member")
+        );
+        assert!(read[0].kind.encryption_info().is_none());
 
         // The parked (encrypted) buffer round-trips through its own key.
         assert!(self.get_kv_data(StateStoreDataKey::StickyPendingEvents(room_id)).await?.is_none());
@@ -720,8 +727,7 @@ impl StateStoreIntegrationTests for DynStateStore {
             "origin_server_ts": 2,
             "content": { "algorithm": "m.megolm.v1.aes-sha2", "ciphertext": "AAAA" },
         }))?;
-        let pending =
-            vec![PersistedPendingStickyEvent { received_ts: 42, event: pending_event }];
+        let pending = vec![PersistedPendingStickyEvent { received_ts: 42, event: pending_event }];
         self.set_kv_data(
             StateStoreDataKey::StickyPendingEvents(room_id),
             StateStoreDataValue::StickyPendingEvents(pending),

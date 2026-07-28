@@ -106,9 +106,9 @@ pub struct Room {
     pub room_member_updates_sender: broadcast::Sender<RoomMembersUpdate>,
 
     /// Map of currently-live sticky events (MSC4354), fed from sync and expired
-    /// on a TTL. Persisted to the state store and reloaded on startup, since the
-    /// sliding-sync sticky extension only backfills incrementally and does not
-    /// re-deliver already-seen live stickies on a subsequent sync.
+    /// on a TTL. Persisted to the state store and reloaded on startup, since
+    /// the sliding-sync sticky extension only backfills incrementally and
+    /// does not re-deliver already-seen live stickies on a subsequent sync.
     #[cfg(feature = "unstable-msc4354")]
     pub(crate) sticky_events: crate::sticky::StickyEvents,
 }
@@ -157,6 +157,11 @@ impl Room {
     /// Load this room's sticky-event map from the state store. Called when the
     /// room is loaded, so already-live stickies survive a restart even though
     /// the sliding-sync extension only backfills incrementally.
+    ///
+    /// A read that fails (e.g. a snapshot written in an older format) is
+    /// returned as an error, which the caller degrades to an empty map: sticky
+    /// events live for at most an hour and are re-delivered by sync, so losing
+    /// a snapshot must never prevent a room from loading.
     #[cfg(feature = "unstable-msc4354")]
     pub(crate) async fn load_sticky_events(&self) -> StoreResult<()> {
         use crate::store::StateStoreDataKey;
@@ -218,7 +223,7 @@ impl Room {
             })
             .filter_map(|e| {
                 let content = e
-                    .event
+                    .raw()
                     .get_field::<ruma::events::rtc::member::RtcMemberEventContent>("content")
                     .ok()
                     .flatten()?;
@@ -236,7 +241,7 @@ impl Room {
         // deserializing them all.
         self.sticky_events.live().into_iter().any(|e| {
             matches!(e.key.event_type.as_str(), "m.rtc.member" | "org.matrix.msc4143.rtc.member")
-                && e.event
+                && e.raw()
                     .get_field::<ruma::events::rtc::member::RtcMemberEventContent>("content")
                     .ok()
                     .flatten()

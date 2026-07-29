@@ -681,7 +681,7 @@ impl StateStoreIntegrationTests for DynStateStore {
             "sender": "@alice:localhost",
             "event_id": "$sticky1:localhost",
             "origin_server_ts": 1,
-            "content": { "sticky_key": "slot" },
+            "content": { "msc4354_sticky_key": "slot" },
         }))?;
         let entries = vec![PersistedStickyEvent {
             sender: user_id!("@alice:localhost").to_owned(),

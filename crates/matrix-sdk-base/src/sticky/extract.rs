@@ -78,10 +78,25 @@ pub(crate) enum StickyExtract {
 /// tell whether the content carries anything beyond `sticky_key`.
 #[derive(Default, Deserialize)]
 struct ContentProbe {
+    /// The unstable name MSC4354 gives `content.sticky_key`, and the one we
+    /// prefer.
+    #[serde(default, rename = "msc4354_sticky_key")]
+    unstable_sticky_key: Option<String>,
+    /// The stable name, which ruma's sticky event contents (e.g.
+    /// `RtcMemberEventContent`) already use. Read as a named field rather than
+    /// left to `rest`, so that it doesn't count as content of its own and
+    /// hide a removal.
     #[serde(default)]
     sticky_key: Option<String>,
     #[serde(flatten)]
     rest: serde_json::Map<String, serde_json::Value>,
+}
+
+impl ContentProbe {
+    /// The sticky key under either spelling.
+    fn sticky_key(self) -> Option<String> {
+        self.unstable_sticky_key.or(self.sticky_key)
+    }
 }
 
 /// Probe for the remaining-ttl hint the server may attach in `unsigned`.
@@ -166,7 +181,7 @@ fn read_content(raw: &Raw<AnySyncTimelineEvent>) -> Option<(String, Option<Strin
     let content: ContentProbe = raw.get_field("content").ok().flatten().unwrap_or_default();
     // A removal carries nothing beyond `sticky_key`.
     let is_removal = content.rest.is_empty();
-    Some((event_type, content.sticky_key, is_removal))
+    Some((event_type, content.sticky_key(), is_removal))
 }
 
 #[cfg(test)]
@@ -197,7 +212,7 @@ mod tests {
             "sender": "@alice:localhost",
             "event_id": "$a:localhost",
             "origin_server_ts": 1000,
-            "content": { "sticky_key": "slot", "application": "m.call" },
+            "content": { "msc4354_sticky_key": "slot", "application": "m.call" },
             "msc4354_sticky": { "duration_ms": 500 },
         }));
 
@@ -218,13 +233,37 @@ mod tests {
             "sender": "@alice:localhost",
             "event_id": "$b:localhost",
             "origin_server_ts": 1000,
-            "content": { "sticky_key": "slot" },
+            "content": { "msc4354_sticky_key": "slot" },
             "msc4354_sticky": { "duration_ms": 500 },
         }));
 
         let candidate = expect_sticky(classify(RECEIVED_TS, &event));
         assert!(candidate.is_removal);
         assert_eq!(candidate.key.sticky_key.as_deref(), Some("slot"));
+    }
+
+    /// Sticky event contents may spell the key either way (ruma's own contents
+    /// use the stable name), and both spellings at once must still read as a
+    /// removal rather than as content of their own.
+    #[test]
+    fn test_removal_event_with_the_stable_sticky_key_spelling() {
+        for content in [
+            json!({ "sticky_key": "slot" }),
+            json!({ "msc4354_sticky_key": "slot", "sticky_key": "slot" }),
+        ] {
+            let event = raw(json!({
+                "type": "m.rtc.member",
+                "sender": "@alice:localhost",
+                "event_id": "$b:localhost",
+                "origin_server_ts": 1000,
+                "content": content,
+                "msc4354_sticky": { "duration_ms": 500 },
+            }));
+
+            let candidate = expect_sticky(classify(RECEIVED_TS, &event));
+            assert!(candidate.is_removal);
+            assert_eq!(candidate.key.sticky_key.as_deref(), Some("slot"));
+        }
     }
 
     #[test]
@@ -234,7 +273,7 @@ mod tests {
             "sender": "@alice:localhost",
             "event_id": "$c:localhost",
             "origin_server_ts": 1000,
-            "content": { "sticky_key": "slot", "application": "m.call" },
+            "content": { "msc4354_sticky_key": "slot", "application": "m.call" },
             "msc4354_sticky": { "duration_ms": 500 },
             "unsigned": { "msc4354_sticky_duration_ttl_ms": 250_000 },
         }));

@@ -328,7 +328,7 @@ mod tests {
             "sender": "@alice:localhost",
             "event_id": "$sticky:localhost",
             "origin_server_ts": 1,
-            "content": { "sticky_key": "slot" },
+            "content": { "msc4354_sticky_key": "slot" },
         }))
         .unwrap()
     }

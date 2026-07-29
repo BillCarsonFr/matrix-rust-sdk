@@ -480,7 +480,7 @@ mod tests {
         let event = sticky_event(
             "$a:example.org",
             serde_json::json!({
-                "sticky_key": "slot", "application": "m.call",
+                "msc4354_sticky_key": "slot", "application": "m.call",
             }),
         );
 
@@ -521,12 +521,26 @@ mod tests {
             "$a:example.org",
             serde_json::json!({
                 "slot_id": "slot",
-                "sticky_key": "slot",
-                "member": {
-                    "id": "slot",
-                    "claimed_device_id": "DEV",
-                    "claimed_user_id": "@alice:example.org",
-                },
+                // Per MSC4354's addendum the sticky key is the member id. It is
+                // spelled twice on purpose: `msc4354_sticky_key` is the
+                // unstable name MSC4354 defines and the one we key the map on,
+                // while ruma's `RtcMemberEventContent` requires the stable
+                // `sticky_key` to deserialize.
+                "msc4354_sticky_key": "member",
+                "sticky_key": "member",
+                "member": { "id": "member", "membership": "join" },
+            }),
+        );
+
+        // A member of the same slot that intends to have left: it stays in the
+        // map, but is not an active membership.
+        let left = sticky_event(
+            "$b:example.org",
+            serde_json::json!({
+                "slot_id": "slot",
+                "msc4354_sticky_key": "gone",
+                "sticky_key": "gone",
+                "member": { "id": "gone", "membership": "leave" },
             }),
         );
 
@@ -534,7 +548,7 @@ mod tests {
         // The room must exist in the store for its map to be fed.
         response.rooms.insert(room_id.to_owned(), http::response::Room::new());
         let mut sticky_room = http::response::StickyEventsRoom::default();
-        sticky_room.events = vec![event];
+        sticky_room.events = vec![event, left];
         response.extensions.sticky_events.rooms.insert(room_id.to_owned(), sticky_room);
 
         client
@@ -547,8 +561,12 @@ mod tests {
             .expect("Failed to process sync");
 
         let room = client.get_room(room_id).expect("found room");
-        assert_eq!(room.live_sticky_events().len(), 1);
+        assert_eq!(room.live_sticky_events().len(), 2);
         assert!(room.has_active_rtc_member_sticky());
+
+        let active = room.active_rtc_member_stickies();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].1.member.id, "member");
     }
 
     #[cfg(all(feature = "e2e-encryption", feature = "unstable-msc4354"))]

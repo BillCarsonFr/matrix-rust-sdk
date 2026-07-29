@@ -207,7 +207,8 @@ impl Room {
     /// MSC4354 sticky events (as opposed to the MSC3401 `m.call.member` state
     /// events surfaced by [`Room::active_room_call_participants`]).
     ///
-    /// Only connected memberships are returned; disconnect events are skipped.
+    /// Only memberships intending to be joined are returned; members that have
+    /// left are skipped.
     #[cfg(feature = "unstable-msc4354")]
     pub fn active_rtc_member_stickies(
         &self,
@@ -227,8 +228,8 @@ impl Room {
                     .get_field::<ruma::events::rtc::member::RtcMemberEventContent>("content")
                     .ok()
                     .flatten()?;
-                // Skip disconnected memberships.
-                (content.disconnect_reason.is_none() && content.member.is_some())
+                // Skip members that intend to have left the slot.
+                (content.member.membership == ruma::events::rtc::member::RtcMembership::Join)
                     .then(|| (e.key.sender.clone(), content))
             })
             .collect()
@@ -237,7 +238,7 @@ impl Room {
     /// Whether there is any live `m.rtc.member` sticky membership in this room.
     #[cfg(feature = "unstable-msc4354")]
     pub fn has_active_rtc_member_sticky(&self) -> bool {
-        // Stop at the first connected membership instead of collecting and
+        // Stop at the first joined membership instead of collecting and
         // deserializing them all.
         self.sticky_events.live().into_iter().any(|e| {
             matches!(e.key.event_type.as_str(), "m.rtc.member" | "org.matrix.msc4143.rtc.member")
@@ -246,7 +247,7 @@ impl Room {
                     .ok()
                     .flatten()
                     .is_some_and(|content| {
-                        content.disconnect_reason.is_none() && content.member.is_some()
+                        content.member.membership == ruma::events::rtc::member::RtcMembership::Join
                     })
         })
     }

@@ -508,7 +508,8 @@ impl Room {
         sticky_key: String,
         duration_ms: u32,
     ) -> Result<(), ClientError> {
-        let content_json = serde_json::json!({ "sticky_key": sticky_key });
+        // `msc4354_sticky_key` is the unstable name of `content.sticky_key`.
+        let content_json = serde_json::json!({ "msc4354_sticky_key": sticky_key });
 
         self.inner.send_raw(&event_type, content_json).with_sticky_duration_ms(duration_ms).await?;
 

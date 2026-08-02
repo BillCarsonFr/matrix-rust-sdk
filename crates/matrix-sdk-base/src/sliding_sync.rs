@@ -331,7 +331,7 @@ mod tests {
             },
         },
         mxc_uri, owned_event_id, owned_mxc_uri, owned_user_id,
-        profile::{ProfileFieldValue, UserProfileChanges, UserProfileUpdate},
+        profile::{ProfileFieldName, UserProfileChanges, UserProfileUpdate},
         room_alias_id, room_id,
         serde::Raw,
         uint, user_id,

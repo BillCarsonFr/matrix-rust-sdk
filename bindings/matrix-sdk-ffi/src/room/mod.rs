@@ -12,7 +12,7 @@
 // See the License for that specific language governing permissions and
 // limitations under the License.
 
-use std::{collections::HashMap, fs, path::PathBuf, pin::pin, sync::Arc};
+use std::{collections::HashMap, fs, path::PathBuf, pin::pin, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use futures_util::{StreamExt, pin_mut};
@@ -35,7 +35,9 @@ use matrix_sdk_ui::{
 use mime::Mime;
 use ruma::{
     EventId, Int, OwnedDeviceId, OwnedRoomOrAliasId, OwnedServerName, OwnedUserId, RoomAliasId,
-    ServerName, UserId, assign,
+    ServerName, UserId,
+    api::client::delayed_events::{DelayParameters, update_delayed_event::UpdateAction},
+    assign,
     events::{
         AnyMessageLikeEventContent, AnySyncTimelineEvent,
         receipt::ReceiptThread as RumaReceiptThread,
@@ -50,7 +52,7 @@ use tracing::error;
 
 use self::{power_levels::RoomPowerLevels, room_info::RoomInfo};
 #[cfg(feature = "unstable-msc4354")]
-use crate::timeline::ShieldState;
+use crate::encryption::EventEncryptionInfo;
 use crate::{
     TaskHandle,
     chunk_iterator::ChunkIterator,
@@ -1390,6 +1392,138 @@ impl Room {
             .into_full_event(self.inner.room_id().to_owned())
             .into())
     }
+
+    /// Send a delayed message-like event to the room ([MSC4140]).
+    ///
+    /// The homeserver holds on to the event and only distributes it to the room
+    /// once `delay_ms` has elapsed, unless the delayed event is updated
+    /// beforehand with [`Room::update_delayed_event`].
+    ///
+    /// # Arguments
+    ///
+    /// * `delay_ms` - How long, in milliseconds, the homeserver should hold on
+    ///   to the event.
+    ///
+    /// * `event_type` - The type of the event to send.
+    ///
+    /// * `content` - The content of the event to send encoded as a JSON string.
+    ///
+    /// Returns the `delay_id` identifying the scheduled event.
+    ///
+    /// [MSC4140]: https://github.com/matrix-org/matrix-spec-proposals/pull/4140
+    pub async fn send_delayed_event(
+        &self,
+        delay_ms: u64,
+        event_type: String,
+        content: String,
+    ) -> Result<String, ClientError> {
+        let content_json: serde_json::Value =
+            serde_json::from_str(&content).map_err(|e| ClientError::Generic {
+                msg: format!("Failed to parse JSON: {e}"),
+                details: Some(format!("{e:?}")),
+            })?;
+
+        let response = self
+            .inner
+            .send_delayed_raw(
+                &event_type,
+                content_json,
+                DelayParameters::Timeout { timeout: Duration::from_millis(delay_ms) },
+            )
+            .await?;
+
+        Ok(response.delay_id)
+    }
+
+    /// Send a delayed state event to the room ([MSC4140]).
+    ///
+    /// See [`Room::send_delayed_event`] for the semantics of delayed events.
+    ///
+    /// # Arguments
+    ///
+    /// * `delay_ms` - How long, in milliseconds, the homeserver should hold on
+    ///   to the event.
+    ///
+    /// * `event_type` - The type of the state event to send.
+    ///
+    /// * `state_key` - A unique key which defines the overwriting semantics for
+    ///   this piece of room state. This is often an empty string.
+    ///
+    /// * `content` - The content of the event to send encoded as a JSON string.
+    ///
+    /// Returns the `delay_id` identifying the scheduled event.
+    ///
+    /// [MSC4140]: https://github.com/matrix-org/matrix-spec-proposals/pull/4140
+    pub async fn send_delayed_state_event(
+        &self,
+        delay_ms: u64,
+        event_type: String,
+        state_key: String,
+        content: String,
+    ) -> Result<String, ClientError> {
+        let content_json: serde_json::Value =
+            serde_json::from_str(&content).map_err(|e| ClientError::Generic {
+                msg: format!("Failed to parse JSON: {e}"),
+                details: Some(format!("{e:?}")),
+            })?;
+
+        let response = self
+            .inner
+            .send_delayed_state_event_raw(
+                &event_type,
+                &state_key,
+                content_json,
+                DelayParameters::Timeout { timeout: Duration::from_millis(delay_ms) },
+            )
+            .await?;
+
+        Ok(response.delay_id)
+    }
+
+    /// Cancel, restart or immediately send a previously scheduled delayed
+    /// event ([MSC4140]).
+    ///
+    /// # Arguments
+    ///
+    /// * `delay_id` - The identifier returned by
+    ///   [`Room::send_delayed_event`] or [`Room::send_delayed_state_event`].
+    ///
+    /// * `action` - What should happen to the delayed event.
+    ///
+    /// [MSC4140]: https://github.com/matrix-org/matrix-spec-proposals/pull/4140
+    pub async fn update_delayed_event(
+        &self,
+        delay_id: String,
+        action: DelayedEventUpdateAction,
+    ) -> Result<(), ClientError> {
+        self.inner.update_delayed_event(delay_id, action.into()).await?;
+
+        Ok(())
+    }
+}
+
+/// What to do with a delayed event that hasn't been distributed to the room
+/// yet ([MSC4140]).
+///
+/// [MSC4140]: https://github.com/matrix-org/matrix-spec-proposals/pull/4140
+#[derive(Clone, Copy, Debug, uniffi::Enum)]
+pub enum DelayedEventUpdateAction {
+    /// Cancel the delayed event: it will never be sent to the room.
+    Cancel,
+    /// Restart the delay timeout, keeping the event scheduled.
+    Restart,
+    /// Send the event to the room right away.
+    Send,
+}
+
+impl From<DelayedEventUpdateAction> for UpdateAction {
+    fn from(value: DelayedEventUpdateAction) -> Self {
+        match value {
+            DelayedEventUpdateAction::Cancel => Self::Cancel,
+            DelayedEventUpdateAction::Restart => Self::Restart,
+            DelayedEventUpdateAction::Send => Self::Send,
+        }
+    }
 }
 
 /// A listener for receiving call decline events in a room.
@@ -1511,53 +1645,7 @@ pub struct StickyEvent {
     pub event_json: String,
     /// The encryption data of this event, or `None` if it was sent in the
     /// clear.
-    pub encryption_info: Option<StickyEventEncryptionInfo>,
-}
-
-/// The encryption data of a sticky event that was sent encrypted (and which we
-/// managed to decrypt).
-#[cfg(feature = "unstable-msc4354")]
-#[derive(uniffi::Record)]
-pub struct StickyEventEncryptionInfo {
-    /// The device the event was sent from, as claimed by the sender.
-    pub sender_device_id: Option<String>,
-    /// The curve25519 key of the device that sent the event.
-    pub sender_curve25519_key: Option<String>,
-    /// The megolm session the event was sent in, if it was sent with megolm.
-    pub session_id: Option<String>,
-    /// The shield to show for this event, lax interpretation.
-    pub shield_state: ShieldState,
-    /// The shield to show for this event, strict interpretation.
-    pub shield_state_strict: ShieldState,
-}
-
-#[cfg(feature = "unstable-msc4354")]
-impl From<&matrix_sdk_base::deserialized_responses::EncryptionInfo> for StickyEventEncryptionInfo {
-    fn from(info: &matrix_sdk_base::deserialized_responses::EncryptionInfo) -> Self {
-        use matrix_sdk_base::deserialized_responses::AlgorithmInfo;
-        use matrix_sdk_ui::timeline::TimelineEventShieldState;
-
-        let sender_curve25519_key = match &info.algorithm_info {
-            AlgorithmInfo::MegolmV1AesSha2 { curve25519_key, .. } => Some(curve25519_key.clone()),
-            AlgorithmInfo::OlmV1Curve25519AesSha2 { curve25519_public_key_base64 } => {
-                Some(curve25519_public_key_base64.clone())
-            }
-        };
-
-        Self {
-            sender_device_id: info.sender_device.as_ref().map(ToString::to_string),
-            sender_curve25519_key,
-            session_id: info.session_id().map(ToOwned::to_owned),
-            shield_state: TimelineEventShieldState::from(
-                info.verification_state.to_shield_state_lax(),
-            )
-            .into(),
-            shield_state_strict: TimelineEventShieldState::from(
-                info.verification_state.to_shield_state_strict(),
-            )
-            .into(),
-        }
-    }
+    pub encryption_info: Option<EventEncryptionInfo>,
 }
 
 #[cfg(feature = "unstable-msc4354")]

@@ -35,6 +35,7 @@ use matrix_sdk_base::{
     BaseClient, DmRoomDefinition, RoomInfoNotableUpdate, RoomState, RoomStateFilter,
     SendOutsideWasm, SessionMeta, StateStoreDataKey, StateStoreDataValue, StoreError,
     SyncOutsideWasm, ThreadingSupport,
+    deserialized_responses::EncryptionInfo,
     event_cache::store::EventCacheStoreLock,
     media::store::MediaStoreLock,
     store::{DynStateStore, RoomLoadSettings, SupportedVersionsResponse, WellKnownResponse},
@@ -73,9 +74,12 @@ use ruma::{
         path_builder::PathBuilder,
     },
     assign,
-    events::{beacon_info::OriginalSyncBeaconInfoEvent, direct::DirectUserIdentifier},
+    events::{
+        AnyToDeviceEvent, beacon_info::OriginalSyncBeaconInfoEvent, direct::DirectUserIdentifier,
+    },
     presence::PresenceState,
     push::Ruleset,
+    serde::Raw,
     time::Instant,
 };
 use serde::de::DeserializeOwned;
@@ -1375,6 +1379,64 @@ impl Client {
     /// a sync response.
     pub fn subscribe_to_all_room_updates(&self) -> broadcast::Receiver<RoomUpdates> {
         self.inner.room_updates_sender.subscribe()
+    }
+
+    /// Subscribe to incoming to-device messages whose type is one of
+    /// `event_types`.
+    ///
+    /// Messages of any other type — including the to-device traffic the SDK
+    /// uses for its own crypto machinery — are not forwarded. Passing an empty
+    /// `event_types` therefore yields a subscription that never fires.
+    ///
+    /// Forwarding stops once the returned [`EventHandlerDropGuard`] is dropped.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async {
+    /// # let client: matrix_sdk::Client = unimplemented!();
+    /// let (_drop_guard, mut subscriber) = client
+    ///     .subscribe_to_to_device_messages(vec![
+    ///         "io.element.call.encryption_keys".to_owned(),
+    ///     ]);
+    ///
+    /// while let Ok(message) = subscriber.recv().await {
+    ///     if message.encryption_info.is_none() {
+    ///         // The message was not encrypted, don't trust it.
+    ///         continue;
+    ///     }
+    ///     println!("{}", message.raw.json());
+    /// }
+    /// # };
+    /// ```
+    pub fn subscribe_to_to_device_messages(
+        &self,
+        event_types: Vec<String>,
+    ) -> (EventHandlerDropGuard, broadcast::Receiver<ToDeviceMessage>) {
+        let event_types: BTreeSet<String> = event_types.into_iter().collect();
+        let (sender, receiver) = broadcast::channel(32);
+
+        // `add_event_handler` can only filter by type for statically-known event
+        // content types, so an arbitrary list of type strings has to be
+        // filtered here instead.
+        let handle = self.add_event_handler(
+            move |raw: Raw<AnyToDeviceEvent>, encryption_info: Option<EncryptionInfo>| {
+                let matches = raw
+                    .get_field::<String>("type")
+                    .ok()
+                    .flatten()
+                    .is_some_and(|event_type| event_types.contains(&event_type));
+
+                if matches {
+                    // Ignore the result: it can only fail if there are no listeners.
+                    let _ = sender.send(ToDeviceMessage { raw, encryption_info });
+                }
+
+                ready(())
+            },
+        );
+
+        (self.event_handler_drop_guard(handle), receiver)
     }
 
     pub(crate) async fn notification_handlers(
@@ -3844,6 +3906,23 @@ pub struct StoreSizes {
     pub event_cache_store: Option<usize>,
     /// The size of the MediaStore.
     pub media_store: Option<usize>,
+}
+
+/// A to-device message received from another device.
+///
+/// Yielded by [`Client::subscribe_to_to_device_messages`].
+#[derive(Debug, Clone)]
+pub struct ToDeviceMessage {
+    /// The event as it was received, decrypted if it was sent encrypted.
+    pub raw: Raw<AnyToDeviceEvent>,
+
+    /// The Olm encryption data of this message, or `None` if it arrived in the
+    /// clear.
+    ///
+    /// This is also `None` for a message we failed to decrypt; such a message
+    /// keeps the `m.room.encrypted` type, so it is only forwarded at all if
+    /// that type was subscribed to.
+    pub encryption_info: Option<EncryptionInfo>,
 }
 
 #[cfg(any(feature = "testing", test))]

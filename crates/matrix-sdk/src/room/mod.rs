@@ -62,8 +62,6 @@ use mime::Mime;
 use reply::Reply;
 #[cfg(feature = "e2e-encryption")]
 use ruma::events::AnySyncMessageLikeEvent;
-#[cfg(feature = "experimental-encrypted-state-events")]
-use ruma::events::AnySyncStateEvent;
 #[cfg(feature = "unstable-msc4274")]
 use ruma::events::room::message::GalleryItemType;
 #[cfg(feature = "e2e-encryption")]
@@ -106,11 +104,11 @@ use ruma::{
     },
     assign,
     events::{
-        AnyRoomAccountDataEvent, AnyRoomAccountDataEventContent, AnyTimelineEvent, EmptyStateKey,
-        Mentions, MessageLikeEventContent, OriginalSyncStateEvent, RedactContent,
-        RedactedStateEventContent, RoomAccountDataEvent, RoomAccountDataEventContent,
-        RoomAccountDataEventType, StateEventContent, StateEventType, StaticEventContent,
-        StaticStateEventContent, SyncStateEvent,
+        AnyRoomAccountDataEvent, AnyRoomAccountDataEventContent, AnySyncStateEvent,
+        AnyTimelineEvent, EmptyStateKey, Mentions, MessageLikeEventContent, OriginalSyncStateEvent,
+        RedactContent, RedactedStateEventContent, RoomAccountDataEvent,
+        RoomAccountDataEventContent, RoomAccountDataEventType, StateEventContent, StateEventType,
+        StaticEventContent, StaticStateEventContent, SyncStateEvent,
         beacon::BeaconEventContent,
         beacon_info::BeaconInfoEventContent,
         direct::DirectEventContent,
@@ -1274,6 +1272,45 @@ impl Room {
             .get_state_events(self.room_id(), event_type)
             .await
             .map_err(Into::into)
+    }
+
+    /// Subscribe to the state events of a given type in this room.
+    ///
+    /// The returned receiver yields every state event of that type as it is
+    /// received, whether it arrives in the state section of a sync response or
+    /// in the timeline. The state store is updated before an event is
+    /// forwarded, so a [`Room::get_state_events`] call made in reaction to one
+    /// already observes it.
+    ///
+    /// Only the state the sync asked for is ever received, so for a custom
+    /// event type this yields nothing unless that type is part of the sliding
+    /// sync `required_state`.
+    ///
+    /// The subscription lasts for as long as the returned
+    /// [`EventHandlerDropGuard`] is kept alive.
+    pub fn subscribe_to_state_events(
+        &self,
+        event_type: StateEventType,
+    ) -> (EventHandlerDropGuard, broadcast::Receiver<Raw<AnySyncStateEvent>>) {
+        let (sender, receiver) = broadcast::channel(16);
+
+        let handle = self.client.add_room_event_handler(self.room_id(), {
+            let event_type = event_type.to_string();
+
+            move |raw: Raw<AnySyncStateEvent>| {
+                // A `Raw<AnySyncStateEvent>` handler is called for state events of every
+                // type, so the type of interest has to be picked out here.
+                if raw.get_field::<String>("type").ok().flatten().as_deref()
+                    == Some(event_type.as_str())
+                {
+                    let _ = sender.send(raw);
+                }
+
+                async {}
+            }
+        });
+
+        (self.client.event_handler_drop_guard(handle), receiver)
     }
 
     /// Get all state events of a given statically-known type in this room.

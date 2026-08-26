@@ -5422,7 +5422,7 @@ dependencies = [
 [[package]]
 name = "ruma"
 version = "0.16.0"
-source = "git+https://github.com/BillCarsonFr/ruma?rev=3fc675dca836d4a5b7a3183a60e962603e0c9715#3fc675dca836d4a5b7a3183a60e962603e0c9715"
+source = "git+https://github.com/BillCarsonFr/ruma?rev=7c71dc925af0aee1efc3fbc93e4dd1d9d5bfb24b#7c71dc925af0aee1efc3fbc93e4dd1d9d5bfb24b"
 dependencies = [
  "assign",
  "js_int",
@@ -5440,7 +5440,7 @@ dependencies = [
 [[package]]
 name = "ruma-client-api"
 version = "0.24.0"
-source = "git+https://github.com/BillCarsonFr/ruma?rev=3fc675dca836d4a5b7a3183a60e962603e0c9715#3fc675dca836d4a5b7a3183a60e962603e0c9715"
+source = "git+https://github.com/BillCarsonFr/ruma?rev=7c71dc925af0aee1efc3fbc93e4dd1d9d5bfb24b#7c71dc925af0aee1efc3fbc93e4dd1d9d5bfb24b"
 dependencies = [
  "as_variant",
  "assign",
@@ -5462,7 +5462,7 @@ dependencies = [
 [[package]]
 name = "ruma-common"
 version = "0.19.0"
-source = "git+https://github.com/BillCarsonFr/ruma?rev=3fc675dca836d4a5b7a3183a60e962603e0c9715#3fc675dca836d4a5b7a3183a60e962603e0c9715"
+source = "git+https://github.com/BillCarsonFr/ruma?rev=7c71dc925af0aee1efc3fbc93e4dd1d9d5bfb24b#7c71dc925af0aee1efc3fbc93e4dd1d9d5bfb24b"
 dependencies = [
  "as_variant",
  "base64 0.22.1",
@@ -5495,7 +5495,7 @@ dependencies = [
 [[package]]
 name = "ruma-events"
 version = "0.34.0"
-source = "git+https://github.com/BillCarsonFr/ruma?rev=3fc675dca836d4a5b7a3183a60e962603e0c9715#3fc675dca836d4a5b7a3183a60e962603e0c9715"
+source = "git+https://github.com/BillCarsonFr/ruma?rev=7c71dc925af0aee1efc3fbc93e4dd1d9d5bfb24b#7c71dc925af0aee1efc3fbc93e4dd1d9d5bfb24b"
 dependencies = [
  "as_variant",
  "indexmap",
@@ -5519,7 +5519,7 @@ dependencies = [
 [[package]]
 name = "ruma-federation-api"
 version = "0.15.0"
-source = "git+https://github.com/BillCarsonFr/ruma?rev=3fc675dca836d4a5b7a3183a60e962603e0c9715#3fc675dca836d4a5b7a3183a60e962603e0c9715"
+source = "git+https://github.com/BillCarsonFr/ruma?rev=7c71dc925af0aee1efc3fbc93e4dd1d9d5bfb24b#7c71dc925af0aee1efc3fbc93e4dd1d9d5bfb24b"
 dependencies = [
  "headers",
  "http",
@@ -5540,7 +5540,7 @@ dependencies = [
 [[package]]
 name = "ruma-html"
 version = "0.8.0"
-source = "git+https://github.com/BillCarsonFr/ruma?rev=3fc675dca836d4a5b7a3183a60e962603e0c9715#3fc675dca836d4a5b7a3183a60e962603e0c9715"
+source = "git+https://github.com/BillCarsonFr/ruma?rev=7c71dc925af0aee1efc3fbc93e4dd1d9d5bfb24b#7c71dc925af0aee1efc3fbc93e4dd1d9d5bfb24b"
 dependencies = [
  "as_variant",
  "html5ever",
@@ -5551,7 +5551,7 @@ dependencies = [
 [[package]]
 name = "ruma-identifiers-validation"
 version = "0.12.1"
-source = "git+https://github.com/BillCarsonFr/ruma?rev=3fc675dca836d4a5b7a3183a60e962603e0c9715#3fc675dca836d4a5b7a3183a60e962603e0c9715"
+source = "git+https://github.com/BillCarsonFr/ruma?rev=7c71dc925af0aee1efc3fbc93e4dd1d9d5bfb24b#7c71dc925af0aee1efc3fbc93e4dd1d9d5bfb24b"
 dependencies = [
  "js_int",
  "thiserror 2.0.19",
@@ -5560,7 +5560,7 @@ dependencies = [
 [[package]]
 name = "ruma-macros"
 version = "0.19.0"
-source = "git+https://github.com/BillCarsonFr/ruma?rev=3fc675dca836d4a5b7a3183a60e962603e0c9715#3fc675dca836d4a5b7a3183a60e962603e0c9715"
+source = "git+https://github.com/BillCarsonFr/ruma?rev=7c71dc925af0aee1efc3fbc93e4dd1d9d5bfb24b#7c71dc925af0aee1efc3fbc93e4dd1d9d5bfb24b"
 dependencies = [
  "as_variant",
  "cfg-if",
@@ -5576,7 +5576,7 @@ dependencies = [
 [[package]]
 name = "ruma-signatures"
 version = "0.21.0"
-source = "git+https://github.com/BillCarsonFr/ruma?rev=3fc675dca836d4a5b7a3183a60e962603e0c9715#3fc675dca836d4a5b7a3183a60e962603e0c9715"
+source = "git+https://github.com/BillCarsonFr/ruma?rev=7c71dc925af0aee1efc3fbc93e4dd1d9d5bfb24b#7c71dc925af0aee1efc3fbc93e4dd1d9d5bfb24b"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek 2.1.1",

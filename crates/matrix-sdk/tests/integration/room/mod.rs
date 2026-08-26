@@ -9,5 +9,6 @@ mod left;
 mod notification_mode;
 mod pinned_events;
 mod spaces;
+mod state_events;
 mod tags;
 mod thread;

@@ -27,6 +27,7 @@ use matrix_sdk::{
     },
     send_queue::RoomSendQueueUpdate as SdkRoomSendQueueUpdate,
 };
+use matrix_sdk_base::deserialized_responses::RawAnySyncOrStrippedState;
 use matrix_sdk_common::{SendOutsideWasm, SyncOutsideWasm};
 use matrix_sdk_ui::{
     timeline::{RoomExt, TimelineBuilder, default_event_filter},
@@ -39,7 +40,7 @@ use ruma::{
     api::client::delayed_events::{DelayParameters, update_delayed_event::UpdateAction},
     assign,
     events::{
-        AnyMessageLikeEventContent, AnySyncTimelineEvent,
+        AnyMessageLikeEventContent, AnySyncTimelineEvent, StateEventType,
         receipt::ReceiptThread as RumaReceiptThread,
         room::{
             MediaSource as RumaMediaSource, avatar::ImageInfo as RumaAvatarImageInfo,
@@ -48,7 +49,9 @@ use ruma::{
         },
     },
 };
-use tracing::error;
+use serde::Deserialize;
+use serde_json::value::RawValue as RawJsonValue;
+use tracing::{error, warn};
 
 use self::{power_levels::RoomPowerLevels, room_info::RoomInfo};
 #[cfg(feature = "unstable-msc4354")]
@@ -547,6 +550,70 @@ impl Room {
             self.inner.send_state_event_raw(&event_type, &state_key, content_json).await?;
 
         Ok(response.event_id.to_string())
+    }
+
+    /// The current room state events of the given type, one per state key.
+    ///
+    /// # Arguments
+    ///
+    /// * `event_type` - The type of the state events to read (e.g.
+    ///   `"m.room.name"` or a custom type).
+    ///
+    /// Only the state the sync asked for is stored locally, so for a custom
+    /// event type this is empty unless that type is part of the sliding sync
+    /// `required_state`.
+    pub async fn state_events(
+        &self,
+        event_type: String,
+    ) -> Result<Vec<RoomStateEvent>, ClientError> {
+        let events = self.inner.get_state_events(StateEventType::from(event_type)).await?;
+
+        Ok(to_state_events(events))
+    }
+
+    /// Subscribe to the room state events of the given type.
+    ///
+    /// The listener is called with the full current list of state events of
+    /// that type — one per state key — immediately and on every subsequent
+    /// change. Several changes arriving in the same sync are reported as a
+    /// single snapshot.
+    ///
+    /// Use the returned [`TaskHandle`] to cancel the subscription.
+    pub fn subscribe_to_state_events(
+        self: Arc<Self>,
+        event_type: String,
+        listener: Box<dyn RoomStateEventsListener>,
+    ) -> Arc<TaskHandle> {
+        use tokio::sync::broadcast::error::RecvError;
+
+        let event_type = StateEventType::from(event_type);
+
+        // Subscribe before reading the first snapshot, so that a change happening in
+        // between is not missed. It may be reported twice instead, which is
+        // harmless for a snapshot.
+        let (drop_guard, mut subscriber) = self.inner.subscribe_to_state_events(event_type.clone());
+
+        Arc::new(TaskHandle::new(get_runtime_handle().spawn(async move {
+            // Deregisters the underlying event handler when this task is cancelled or
+            // the handle is dropped.
+            let _event_handler_drop_guard = drop_guard;
+
+            loop {
+                match self.inner.get_state_events(event_type.clone()).await {
+                    Ok(events) => listener.on_update(to_state_events(events)),
+                    Err(error) => error!("Failed to read the room state: {error}"),
+                }
+
+                match subscriber.recv().await {
+                    Ok(_) | Err(RecvError::Lagged(_)) => {
+                        // One sync can carry several state events of this type; take
+                        // them all into the next snapshot rather than emitting one each.
+                        while subscriber.try_recv().is_ok() {}
+                    }
+                    Err(RecvError::Closed) => break,
+                }
+            }
+        })))
     }
 
     /// Redacts an event from the room.
@@ -1624,6 +1691,83 @@ pub fn matrix_to_room_alias_permalink(
 #[matrix_sdk_ffi_macros::export(callback_interface)]
 pub trait RoomInfoListener: SyncOutsideWasm + SendOutsideWasm {
     fn call(&self, room_info: RoomInfo);
+}
+
+/// A room state event, as exposed over FFI.
+#[derive(uniffi::Record)]
+pub struct RoomStateEvent {
+    /// The event type, e.g. `m.room.name`.
+    pub event_type: String,
+    /// The state key this event is stored under, which is often the empty
+    /// string.
+    pub state_key: String,
+    /// The event sender.
+    pub sender: String,
+    /// The `content` of the event, as a JSON string.
+    ///
+    /// This is `{}` for an event that was redacted.
+    pub content_json: String,
+    /// The event id, or `None` for the stripped state of a room we are only
+    /// invited to.
+    pub event_id: Option<String>,
+    /// When the event was sent, in milliseconds since the Unix epoch, or `None`
+    /// for the stripped state of a room we are only invited to.
+    pub timestamp: Option<u64>,
+}
+
+impl RoomStateEvent {
+    fn from_raw(raw: &RawAnySyncOrStrippedState) -> Result<Self, serde_json::Error> {
+        /// The subset of a state event that is exposed over FFI. Both the sync
+        /// and the stripped shape deserialize into this.
+        #[derive(Deserialize)]
+        struct RoomStateEventHelper<'a> {
+            #[serde(rename = "type")]
+            event_type: String,
+            state_key: String,
+            sender: String,
+            #[serde(borrow)]
+            content: &'a RawJsonValue,
+            event_id: Option<String>,
+            origin_server_ts: Option<u64>,
+        }
+
+        let json = match raw {
+            RawAnySyncOrStrippedState::Sync(raw) => raw.json(),
+            RawAnySyncOrStrippedState::Stripped(raw) => raw.json(),
+        };
+        let helper: RoomStateEventHelper<'_> = serde_json::from_str(json.get())?;
+
+        Ok(Self {
+            event_type: helper.event_type,
+            state_key: helper.state_key,
+            sender: helper.sender,
+            content_json: helper.content.get().to_owned(),
+            event_id: helper.event_id,
+            timestamp: helper.origin_server_ts,
+        })
+    }
+}
+
+/// Converts the raw state of a room, skipping — and logging — any event that
+/// can't be parsed.
+fn to_state_events(raw_events: Vec<RawAnySyncOrStrippedState>) -> Vec<RoomStateEvent> {
+    raw_events
+        .iter()
+        .filter_map(|raw| match RoomStateEvent::from_raw(raw) {
+            Ok(event) => Some(event),
+            Err(error) => {
+                warn!("Skipping malformed state event: {error}");
+                None
+            }
+        })
+        .collect()
+}
+
+/// A listener for the room state events of a single type, registered with
+/// [`Room::subscribe_to_state_events`].
+#[matrix_sdk_ffi_macros::export(callback_interface)]
+pub trait RoomStateEventsListener: SyncOutsideWasm + SendOutsideWasm {
+    fn on_update(&self, events: Vec<RoomStateEvent>);
 }
 
 /// A currently-live sticky event (MSC4354), as exposed over FFI.

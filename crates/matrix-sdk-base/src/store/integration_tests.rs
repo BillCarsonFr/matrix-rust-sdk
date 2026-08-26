@@ -362,7 +362,7 @@ impl StateStoreIntegrationTests for DynStateStore {
             self.get_user_room_receipt_event(
                 room_id,
                 ReceiptType::Read,
-                ReceiptThread::Unthreaded,
+                &ReceiptThread::Unthreaded,
                 user_id
             )
             .await?
@@ -372,7 +372,7 @@ impl StateStoreIntegrationTests for DynStateStore {
             self.get_event_room_receipt_events(
                 room_id,
                 ReceiptType::Read,
-                ReceiptThread::Unthreaded,
+                &ReceiptThread::Unthreaded,
                 first_receipt_event_id()
             )
             .await?
@@ -926,7 +926,7 @@ impl StateStoreIntegrationTests for DynStateStore {
             self.get_user_room_receipt_event(
                 room_id,
                 ReceiptType::Read,
-                ReceiptThread::Unthreaded,
+                &ReceiptThread::Unthreaded,
                 user_id()
             )
             .await
@@ -937,7 +937,7 @@ impl StateStoreIntegrationTests for DynStateStore {
             self.get_event_room_receipt_events(
                 room_id,
                 ReceiptType::Read,
-                ReceiptThread::Unthreaded,
+                &ReceiptThread::Unthreaded,
                 first_event_id
             )
             .await
@@ -948,7 +948,7 @@ impl StateStoreIntegrationTests for DynStateStore {
             self.get_event_room_receipt_events(
                 room_id,
                 ReceiptType::Read,
-                ReceiptThread::Unthreaded,
+                &ReceiptThread::Unthreaded,
                 second_event_id
             )
             .await
@@ -964,7 +964,7 @@ impl StateStoreIntegrationTests for DynStateStore {
             .get_user_room_receipt_event(
                 room_id,
                 ReceiptType::Read,
-                ReceiptThread::Unthreaded,
+                &ReceiptThread::Unthreaded,
                 user_id(),
             )
             .await
@@ -976,7 +976,7 @@ impl StateStoreIntegrationTests for DynStateStore {
             .get_event_room_receipt_events(
                 room_id,
                 ReceiptType::Read,
-                ReceiptThread::Unthreaded,
+                &ReceiptThread::Unthreaded,
                 first_event_id,
             )
             .await
@@ -992,7 +992,7 @@ impl StateStoreIntegrationTests for DynStateStore {
             self.get_event_room_receipt_events(
                 room_id,
                 ReceiptType::Read,
-                ReceiptThread::Unthreaded,
+                &ReceiptThread::Unthreaded,
                 second_event_id
             )
             .await
@@ -1008,7 +1008,7 @@ impl StateStoreIntegrationTests for DynStateStore {
             .get_user_room_receipt_event(
                 room_id,
                 ReceiptType::Read,
-                ReceiptThread::Unthreaded,
+                &ReceiptThread::Unthreaded,
                 user_id(),
             )
             .await
@@ -1020,7 +1020,7 @@ impl StateStoreIntegrationTests for DynStateStore {
             self.get_event_room_receipt_events(
                 room_id,
                 ReceiptType::Read,
-                ReceiptThread::Unthreaded,
+                &ReceiptThread::Unthreaded,
                 first_event_id
             )
             .await
@@ -1031,7 +1031,7 @@ impl StateStoreIntegrationTests for DynStateStore {
             .get_event_room_receipt_events(
                 room_id,
                 ReceiptType::Read,
-                ReceiptThread::Unthreaded,
+                &ReceiptThread::Unthreaded,
                 second_event_id,
             )
             .await
@@ -1048,7 +1048,7 @@ impl StateStoreIntegrationTests for DynStateStore {
             self.get_user_room_receipt_event(
                 room_id,
                 ReceiptType::Read,
-                ReceiptThread::Main,
+                &ReceiptThread::Main,
                 user_id()
             )
             .await
@@ -1059,7 +1059,7 @@ impl StateStoreIntegrationTests for DynStateStore {
             self.get_event_room_receipt_events(
                 room_id,
                 ReceiptType::Read,
-                ReceiptThread::Main,
+                &ReceiptThread::Main,
                 second_event_id
             )
             .await
@@ -1076,7 +1076,7 @@ impl StateStoreIntegrationTests for DynStateStore {
             .get_user_room_receipt_event(
                 room_id,
                 ReceiptType::Read,
-                ReceiptThread::Unthreaded,
+                &ReceiptThread::Unthreaded,
                 user_id(),
             )
             .await
@@ -1088,7 +1088,7 @@ impl StateStoreIntegrationTests for DynStateStore {
             .get_event_room_receipt_events(
                 room_id,
                 ReceiptType::Read,
-                ReceiptThread::Unthreaded,
+                &ReceiptThread::Unthreaded,
                 second_event_id,
             )
             .await
@@ -1102,7 +1102,12 @@ impl StateStoreIntegrationTests for DynStateStore {
         assert_eq!(second_event_unthreaded_receipts[0].1.ts.unwrap().0, second_receipt_ts);
         // Threaded receipts should have changed
         let (threaded_user_receipt_event_id, threaded_user_receipt) = self
-            .get_user_room_receipt_event(room_id, ReceiptType::Read, ReceiptThread::Main, user_id())
+            .get_user_room_receipt_event(
+                room_id,
+                ReceiptType::Read,
+                &ReceiptThread::Main,
+                user_id(),
+            )
             .await
             .expect("Getting threaded user room receipt after save failed")
             .unwrap();
@@ -1112,7 +1117,7 @@ impl StateStoreIntegrationTests for DynStateStore {
             .get_event_room_receipt_events(
                 room_id,
                 ReceiptType::Read,
-                ReceiptThread::Main,
+                &ReceiptThread::Main,
                 second_event_id,
             )
             .await
@@ -1254,7 +1259,7 @@ impl StateStoreIntegrationTests for DynStateStore {
             self.get_user_room_receipt_event(
                 room_id,
                 ReceiptType::Read,
-                ReceiptThread::Unthreaded,
+                &ReceiptThread::Unthreaded,
                 user_id
             )
             .await?
@@ -1264,12 +1269,12 @@ impl StateStoreIntegrationTests for DynStateStore {
             self.get_event_room_receipt_events(
                 room_id,
                 ReceiptType::Read,
-                ReceiptThread::Unthreaded,
+                &ReceiptThread::Unthreaded,
                 first_receipt_event_id()
             )
             .await?
             .is_empty(),
-            "still event recepts in the store"
+            "still event receipts in the store"
         );
         assert!(self.load_send_queue_requests(room_id).await?.is_empty());
         assert!(self.load_dependent_queued_requests(room_id).await?.is_empty());

@@ -16,7 +16,7 @@
 //!
 //! See [`Timeline`] for details.
 
-use std::{fs, path::PathBuf, sync::Arc};
+use std::{fs, iter, path::PathBuf, sync::Arc};
 
 use algorithms::rfind_event_by_item_id;
 use event_item::TimelineItemHandle;
@@ -44,11 +44,13 @@ use ruma::{
     api::client::receipt::create_receipt::v3::ReceiptType,
     events::{
         AnyMessageLikeEventContent, AnySyncTimelineEvent, Mentions,
+        location::{AssetType, LocationContent, ZoomLevel},
         poll::unstable_start::{NewUnstablePollStartEventContent, UnstablePollStartEventContent},
         receipt::{Receipt, ReceiptThread},
-        relation::Thread,
+        relation::{RelationType, Thread},
         room::message::{
-            AddMentions, Relation, RelationWithoutReplacement, ReplyWithinThread,
+            AddMentions, LocationMessageEventContent, MessageType, Relation,
+            RelationWithoutReplacement, ReplyWithinThread, RoomMessageEventContent,
             RoomMessageEventContentWithoutRelation, TextMessageEventContent,
         },
     },
@@ -61,7 +63,7 @@ use tracing::{instrument, trace, warn};
 use self::{
     algorithms::rfind_event_by_id, controller::TimelineController, futures::SendAttachment,
 };
-use crate::timeline::controller::CryptoDropHandles;
+use crate::timeline::controller::{CryptoDropHandles, SendReceiptDecision};
 
 mod algorithms;
 mod builder;
@@ -89,7 +91,7 @@ pub use self::{
     error::*,
     event_filter::{TimelineEventCondition, TimelineEventFilter},
     event_item::{
-        AnyOtherStateEventContentChange, BeaconInfo, EmbeddedEvent, EncryptedMessage,
+        AnyOtherStateEventContentChange, BeaconInfo, EditRevision, EmbeddedEvent, EncryptedMessage,
         EventItemOrigin, EventSendState, EventTimelineItem, InReplyToDetails, LiveLocationState,
         MediaUploadProgress, MemberProfileChange, MembershipChange, Message, MsgLikeContent,
         MsgLikeKind, OtherMessageLike, OtherState, PollResult, PollState, Profile, ReactionInfo,
@@ -284,6 +286,38 @@ impl Timeline {
         Some(item.to_owned())
     }
 
+    /// Get the edit history for the given event.
+    ///
+    /// Returns all revisions of the event, in chronological order.
+    /// The first entry is the original event content, followed by each
+    /// edit in the order they were applied.
+    ///
+    /// This looks up the event and all `m.replace` relations targeting it,
+    /// first in the event cache and falling back to the homeserver if needed.
+    /// This works regardless of the timeline's focus kind (live, thread,
+    /// permalink, or pinned events).
+    pub async fn edit_revisions(&self, event_id: &EventId) -> Result<Vec<EditRevision>, Error> {
+        let Ok((original_event, edit_events)) = self
+            .controller
+            .find_event_with_relations(event_id, Some(vec![RelationType::Replacement]))
+            .await
+        else {
+            return Ok(Vec::new());
+        };
+
+        let room = self.room();
+        let mut revisions = Vec::with_capacity(edit_events.len() + 1);
+
+        for event in iter::once(original_event).chain(edit_events) {
+            let timestamp = event.timestamp();
+            if let Some(content) = TimelineItemContent::from_event(room, event).await {
+                revisions.push(EditRevision { content, timestamp });
+            }
+        }
+
+        Ok(revisions)
+    }
+
     /// Get the latest of the timeline's remote event ids.
     pub async fn latest_event_id(&self) -> Option<OwnedEventId> {
         self.controller.latest_event_id().await
@@ -418,14 +452,48 @@ impl Timeline {
         &self,
         content: RoomMessageEventContentWithoutRelation,
         in_reply_to: OwnedEventId,
-    ) -> Result<(), Error> {
+    ) -> Result<SendHandle, Error> {
         let reply = self
             .infer_reply(Some(in_reply_to))
             .await
             .expect("the reply will always be set because we provided a replied-to event id");
         let content = self.room().make_reply_event(content, reply).await?;
-        self.send(content.into()).await?;
-        Ok(())
+        self.send(content.into()).await
+    }
+
+    /// Send a location event to the room, with `body` as the plain-text
+    /// fallback and `geo_uri` its RFC 5870 representation. With `in_reply_to`,
+    /// the location is sent as a reply, with [`Self::send_reply`] semantics.
+    #[instrument(skip(self, body, geo_uri, description))]
+    pub async fn send_location(
+        &self,
+        body: String,
+        geo_uri: String,
+        description: Option<String>,
+        zoom_level: Option<ZoomLevel>,
+        asset_type: Option<AssetType>,
+        in_reply_to: Option<OwnedEventId>,
+    ) -> Result<SendHandle, Error> {
+        let mut content = LocationMessageEventContent::new(body, geo_uri.clone());
+
+        if let Some(asset_type) = asset_type {
+            content = content.with_asset_type(asset_type);
+        }
+
+        let mut location = LocationContent::new(geo_uri);
+        location.description = description;
+        location.zoom_level = zoom_level;
+        content.location = Some(location);
+
+        let msgtype = MessageType::Location(content);
+
+        match in_reply_to {
+            Some(event_id) => {
+                self.send_reply(RoomMessageEventContentWithoutRelation::new(msgtype), event_id)
+                    .await
+            }
+            None => self.send(RoomMessageEventContent::new(msgtype).into()).await,
+        }
     }
 
     /// Given a message or media to send, and an optional `in_reply_to` event,
@@ -574,7 +642,23 @@ impl Timeline {
         item_id: &TimelineEventItemId,
         reaction_key: &str,
     ) -> Result<bool, Error> {
-        self.controller.toggle_reaction_local(item_id, reaction_key).await
+        self.controller.toggle_reaction_local(item_id, reaction_key, None).await
+    }
+
+    /// Same as [`Timeline::toggle_reaction`], merging `extra_content`'s fields
+    /// into the reaction's content when one is added.
+    ///
+    /// The reaction's own fields take precedence on conflicts. Removing a
+    /// reaction is a redaction, which carries no content, so `extra_content` is
+    /// only used when adding one — and only for reactions to remote events,
+    /// since a local echo is the user's own not-yet-sent event.
+    pub async fn toggle_reaction_with_extra_content(
+        &self,
+        item_id: &TimelineEventItemId,
+        reaction_key: &str,
+        extra_content: Option<serde_json::Map<String, serde_json::Value>>,
+    ) -> Result<bool, Error> {
+        self.controller.toggle_reaction_local(item_id, reaction_key, extra_content).await
     }
 
     /// Sends an attachment to the room.
@@ -754,20 +838,40 @@ impl Timeline {
         receipt_type: ReceiptType,
         event_id: OwnedEventId,
     ) -> Result<bool> {
+        self.send_single_receipt_inner(receipt_type, event_id, false).await
+    }
+
+    /// Same as [`Self::send_single_receipt`], but lets the caller state whether
+    /// this is part of marking the whole room as read.
+    ///
+    /// When it is, and the only candidate event is one of the user's own, a
+    /// receipt is still sent against it so the homeserver recomputes its
+    /// push/badge count. See [`TimelineController::should_send_receipt`].
+    async fn send_single_receipt_inner(
+        &self,
+        receipt_type: ReceiptType,
+        event_id: OwnedEventId,
+        is_marking_room_as_read: bool,
+    ) -> Result<bool> {
         let thread = self.controller.infer_thread_for_read_receipt(&receipt_type);
 
-        if !self.controller.should_send_receipt(&receipt_type, &thread, &event_id).await {
-            trace!(
-                "not sending receipt, because we already cover the event with a previous receipt"
-            );
+        let event_id = match self
+            .controller
+            .should_send_receipt(&receipt_type, &thread, &event_id, is_marking_room_as_read)
+            .await
+        {
+            SendReceiptDecision::SendTo(event_id) => event_id,
+            SendReceiptDecision::DoNotSend => {
+                trace!("not sending receipt, because it wouldn't move the real receipt forwards");
 
-            if thread == ReceiptThread::Unthreaded {
-                // Unset the read marker.
-                self.room().set_unread_flag(false).await?;
+                if thread == ReceiptThread::Unthreaded {
+                    // Unset the read marker.
+                    self.room().set_unread_flag(false).await?;
+                }
+
+                return Ok(false);
             }
-
-            return Ok(false);
-        }
+        };
 
         trace!("sending receipt");
         self.room().send_single_receipt(receipt_type, thread, event_id).await?;
@@ -784,39 +888,52 @@ impl Timeline {
     /// This also unsets the unread marker of the room if necessary.
     #[instrument(skip(self))]
     pub async fn send_multiple_receipts(&self, mut receipts: Receipts) -> Result<()> {
-        if let Some(fully_read) = &receipts.fully_read
-            && !self
+        if let Some(fully_read) = &receipts.fully_read {
+            receipts.fully_read = match self
                 .controller
                 .should_send_receipt(
                     &ReceiptType::FullyRead,
                     &ReceiptThread::Unthreaded,
                     fully_read,
+                    false,
                 )
                 .await
-        {
-            receipts.fully_read = None;
+            {
+                SendReceiptDecision::SendTo(event_id) => Some(event_id),
+                SendReceiptDecision::DoNotSend => None,
+            };
         }
 
-        if let Some(read_receipt) = &receipts.public_read_receipt
-            && !self
+        if let Some(read_receipt) = &receipts.public_read_receipt {
+            receipts.public_read_receipt = match self
                 .controller
-                .should_send_receipt(&ReceiptType::Read, &ReceiptThread::Unthreaded, read_receipt)
+                .should_send_receipt(
+                    &ReceiptType::Read,
+                    &ReceiptThread::Unthreaded,
+                    read_receipt,
+                    false,
+                )
                 .await
-        {
-            receipts.public_read_receipt = None;
+            {
+                SendReceiptDecision::SendTo(event_id) => Some(event_id),
+                SendReceiptDecision::DoNotSend => None,
+            };
         }
 
-        if let Some(private_read_receipt) = &receipts.private_read_receipt
-            && !self
+        if let Some(private_read_receipt) = &receipts.private_read_receipt {
+            receipts.private_read_receipt = match self
                 .controller
                 .should_send_receipt(
                     &ReceiptType::ReadPrivate,
                     &ReceiptThread::Unthreaded,
                     private_read_receipt,
+                    false,
                 )
                 .await
-        {
-            receipts.private_read_receipt = None;
+            {
+                SendReceiptDecision::SendTo(event_id) => Some(event_id),
+                SendReceiptDecision::DoNotSend => None,
+            };
         }
 
         let room = self.room();
@@ -853,7 +970,7 @@ impl Timeline {
     #[instrument(skip(self), fields(room_id = ?self.room().room_id()))]
     pub async fn mark_as_read(&self, receipt_type: ReceiptType) -> Result<bool> {
         if let Some(event_id) = self.controller.latest_event_id().await {
-            self.send_single_receipt(receipt_type, event_id).await
+            self.send_single_receipt_inner(receipt_type, event_id, true).await
         } else {
             trace!("can't mark room as read because there's no latest event id");
 
